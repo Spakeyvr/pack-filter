@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +31,20 @@ def bundle_model() -> None:
         if src.resolve() != dest.resolve():
             shutil.copy2(src / name, dest / name)
     print(f"\nbundled model -> {dest}")
+
+
+def make_dmg(src: Path, dmg: Path, attempts: int = 5) -> None:
+    """hdiutil intermittently fails with "Resource busy" on CI Macs; retry with a pause."""
+    for i in range(1, attempts + 1):
+        try:
+            subprocess.check_call(["hdiutil", "create", "-volname", "Pack Filter", "-srcfolder", str(src),
+                                   "-ov", "-format", "UDZO", str(dmg)])
+            return
+        except subprocess.CalledProcessError:
+            if i == attempts:
+                raise
+            print(f"hdiutil failed (attempt {i}/{attempts}), retrying...")
+            time.sleep(5 * i)
 
 
 def arch() -> str:
@@ -56,8 +71,7 @@ def main() -> int:
         staging.mkdir()
         subprocess.check_call(["ditto", str(app), str(staging / app.name)])
         (staging / "Applications").symlink_to("/Applications")
-        subprocess.check_call(["hdiutil", "create", "-volname", "Pack Filter", "-srcfolder", str(staging),
-                               "-ov", "-format", "UDZO", str(dmg)])
+        make_dmg(staging, dmg)
         shutil.rmtree(staging)
         print(f"built {dmg} and {zip_base}.zip")
     elif sys.platform == "win32":
