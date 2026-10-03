@@ -28,6 +28,29 @@ def models_dir() -> Path:
     return base
 
 
+def downloads_dir() -> Path:
+    """The user's Downloads folder (falls back to home)."""
+    home = Path.home()
+    if sys.platform.startswith("linux"):
+        try:
+            import subprocess
+            out = subprocess.run(["xdg-user-dir", "DOWNLOAD"], capture_output=True, text=True, timeout=2)
+            p = Path(out.stdout.strip())
+            if out.returncode == 0 and p.is_dir() and p != home:
+                return p
+        except (OSError, subprocess.SubprocessError):
+            pass
+    d = home / "Downloads"
+    return d if d.is_dir() else home
+
+
+def work_dir() -> Path:
+    """Scratch space for unpacking downloaded .zip packs before filtering them."""
+    d = data_dir() / "work"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def bundled_assets_dir() -> Path:
     """Assets shipped with the app (inside the PyInstaller bundle or the package)."""
     frozen_root = getattr(sys, "_MEIPASS", None)

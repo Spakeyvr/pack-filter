@@ -119,6 +119,14 @@ def encode_like(img: Image.Image, fmt: Optional[str], path: Path) -> bytes:
     return buf.getvalue()
 
 
+def censor_bytes(data: bytes, path: Path, settings: Settings) -> bytes:
+    """Censored version of an image file's bytes, in the same format as the original."""
+    with Image.open(io.BytesIO(data)) as img:
+        fmt = img.format
+        out = censor_image(img, settings)
+    return encode_like(out, fmt, path)
+
+
 def censor_file(path: Path, settings: Settings, store: Store) -> Optional[str]:
     """Censor one image file in place, backing up the original first.
 
@@ -129,10 +137,7 @@ def censor_file(path: Path, settings: Settings, store: Store) -> Optional[str]:
     if store.lookup_censored(original_sha):
         return None
     store.save_backup(original_sha, path.suffix, data)
-    with Image.open(io.BytesIO(data)) as img:
-        fmt = img.format
-        out = censor_image(img, settings)
-    encoded = encode_like(out, fmt, path)
+    encoded = censor_bytes(data, path, settings)
     tmp = path.with_name(path.name + ".pftmp")
     tmp.write_bytes(encoded)
     os.replace(tmp, path)

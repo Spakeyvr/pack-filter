@@ -14,7 +14,7 @@ from typing import Callable, Iterable, Optional
 
 from PIL import Image
 
-from .censor import censor_file
+from .censor import censor_bytes, censor_file
 from .model import RatingModel, ensure_model, preprocess
 from .policy import Settings
 from .scanner import ImageEntry, Pack, scan_path
@@ -64,6 +64,46 @@ def items_from_packs(packs: Iterable[Pack]) -> list[Item]:
             out.append(Item(path=e.path, pack=pack.name, pack_root=pack.root, song=e.song,
                             categories=set(e.categories)))
     return out
+
+
+_STORED_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ogg", ".mp3", ".opus", ".m4a", ".flac",
+                ".mp4", ".avi", ".webm", ".mkv", ".zip", ".7z", ".rar"}
+_JUNK = {".ds_store", "thumbs.db", "desktop.ini"}
+
+
+def _walk_pack(root: Path):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d != "__MACOSX" and not d.startswith("._"))
+        for name in sorted(filenames):
+            if name.startswith("._") or name.lower() in _JUNK or name.endswith((".pftmp", ".part")):
+                continue
+            yield Path(dirpath) / name
+
+
+def _size(f: Path) -> int:
+    try:
+        return f.stat().st_size
+    except OSError:
+        return 0
+
+
+def _compression(f: Path) -> int:
+    # Images and audio are already compressed; storing them is much faster.
+    return zipfile.ZIP_STORED if f.suffix.lower() in _STORED_EXTS else zipfile.ZIP_DEFLATED
+
+
+def _safe_name(name: str) -> str:
+    return "".join("_" if c in '<>:"/\\|?*' else c for c in name).strip() or "pack"
+
+
+def _unique_path(p: Path) -> Path:
+    if not p.exists():
+        return p
+    stem = p.name[:-len(".zip")]
+    i = 2
+    while (p.with_name(f"{stem} {i}.zip")).exists():
+        i += 1
+    return p.with_name(f"{stem} {i}.zip")
 
 
 def _decode_zip_name(info: zipfile.ZipInfo) -> str:
@@ -186,46 +226,81 @@ class Engine:
                 if progress:
                     progress(done, total, f"Checked {done} of {total} images")
 
-    # --- applying ------------------------------------------------------------
+    # --- exporting -----------------------------------------------------------
+    def export_zips(self, items: list[Item], settings: Settings, dest: Path,
+                    progress: Optional[ProgressFn] = None,
+                    cancel: Optional[threading.Event] = None) -> ApplyResult:
+        """Write one ``<Pack> (filtered).zip`` per pack into ``dest``.
+
+        The source packs are never modified: flagged images are censored in memory
+        while the zip is written, every other file is copied as-is.
+        """
+        result = ApplyResult()
+        flagged: dict[Path, dict[Path, Item]] = {}
+        for it in items:
+            if it.will_censor(settings):
+                flagged.setdefault(it.pack_root, {})[it.path] = it
+        roots = sorted({it.pack_root for it in items} if settings.export_unchanged else flagged,
+                       key=lambda r: r.name.lower())
+        dest.mkdir(parents=True, exist_ok=True)
+
+        for n, root in enumerate(roots, 1):
+            files = [f for f in _walk_pack(root)]
+            total = sum(_size(f) for f in files) or 1
+            done = 0
+            targets = flagged.get(root, {})
+            out = _unique_path(dest / f"{_safe_name(root.name)} (filtered).zip")
+            part = out.with_name(out.name + ".part")
+            label = f"Packing {root.name} ({n} of {len(roots)})"
+            try:
+                with zipfile.ZipFile(part, "w", allowZip64=True) as zf:
+                    for f in files:
+                        if cancel is not None and cancel.is_set():
+                            raise Cancelled()
+                        arc = f"{root.name}/{f.relative_to(root).as_posix()}"
+                        info = zipfile.ZipInfo.from_file(f, arc)
+                        info.compress_type = _compression(f)
+                        if f in targets:
+                            try:
+                                data = censor_bytes(f.read_bytes(), f, settings)
+                            except Exception as exc:
+                                # Never ship the uncensored original by accident.
+                                result.errors.append(f"{f}: {exc} (left out of the zip)")
+                                continue
+                            info.file_size = len(data)
+                            zf.writestr(info, data)
+                            result.censored += 1
+                        else:
+                            with open(f, "rb") as src, zf.open(info, "w", force_zip64=_size(f) > 0x7FFF0000) as dst:
+                                shutil.copyfileobj(src, dst, 1 << 20)
+                        done += _size(f)
+                        if progress:
+                            progress(done, total, label)
+                part.replace(out)
+            except BaseException:
+                part.unlink(missing_ok=True)
+                raise
+            result.output_roots.append(out)
+        return result
+
+    # --- editing in place (CLI) ------------------------------------------------
     def apply(self, items: list[Item], settings: Settings, progress: Optional[ProgressFn] = None,
               cancel: Optional[threading.Event] = None) -> ApplyResult:
+        """Censor flagged images inside the packs themselves, backing up originals."""
         result = ApplyResult()
         targets = [it for it in items if it.will_censor(settings)]
-        copy_map: dict[Path, Path] = {}
-        if settings.output_mode == "copy":
-            dest_root = Path(settings.copy_destination).expanduser()
-            if not settings.copy_destination:
-                raise ValueError("Choose a folder to save the censored packs to.")
-            roots = sorted({it.pack_root for it in items})
-            for i, root in enumerate(roots):
-                if cancel is not None and cancel.is_set():
-                    raise Cancelled()
-                if progress:
-                    progress(i, len(roots), f"Copying pack {root.name}...")
-                target = dest_root / root.name
-                if target.resolve() == root.resolve():
-                    raise ValueError("The output folder must be different from the pack's own folder.")
-                shutil.copytree(root, target, dirs_exist_ok=True,
-                                ignore=shutil.ignore_patterns("__MACOSX", "._*"))
-                copy_map[root] = target
-                result.output_roots.append(target)
-
         for i, it in enumerate(targets):
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
-            path = it.path
-            if copy_map:
-                path = copy_map[it.pack_root] / it.path.relative_to(it.pack_root)
             try:
-                new_sha = censor_file(path, settings, self.store)
+                new_sha = censor_file(it.path, settings, self.store)
                 if new_sha:
                     result.censored += 1
-                    if not copy_map:
-                        it.censored, it.sha = True, new_sha
+                    it.censored, it.sha = True, new_sha
                 else:
                     result.skipped += 1
             except Exception as exc:
-                result.errors.append(f"{path}: {exc}")
+                result.errors.append(f"{it.path}: {exc}")
             if progress:
                 progress(i + 1, len(targets), f"Censored {i + 1} of {len(targets)} images")
         return result

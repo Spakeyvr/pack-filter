@@ -2,10 +2,12 @@
 
 Hide lewd cover art in rhythm game song packs.
 
-Point Pack Filter at your Etterna packs (folders or downloaded `.zip` files). It checks every
+Drop in your Etterna packs, as folders or downloaded `.zip` files. Pack Filter checks every
 banner, background, jacket, CD title and pack banner with the
-[`anime_dbrating`](https://huggingface.co/deepghs/anime_dbrating) model, and censors the ones
-you don't want to see, from "a bit suggestive" up to outright hentai. You choose how strict it is.
+[`anime_dbrating`](https://huggingface.co/deepghs/anime_dbrating) model. Then you click
+**Download** and get a filtered `.zip` of each pack in your Downloads folder (or a folder you
+choose), with the covers you don't want censored. You decide how strict it is, from
+"a bit suggestive" up to only outright hentai. Your original packs are never modified.
 
 Runs on **Windows, macOS and Linux**, the same platforms as Etterna. It also works with StepMania
 and ITG packs, osu! beatmap folders, Quaver, K-Shoot and BMS, and for anything it doesn't recognize
@@ -13,8 +15,13 @@ it scans every image in the folder.
 
 ## Features
 
-- **Drag and drop.** Drop pack folders, your whole `Songs` folder, or `.zip` packs into the window.
-  Zips are extracted for you, usually straight into your Etterna `Songs` folder.
+- **Drag and drop.** Drop pack folders, your whole `Songs` folder, or downloaded `.zip` packs
+  into the window. Zips are unpacked to a temporary folder that's cleaned up when you quit.
+- **One filtered zip per pack.** Clicking **Download N filtered packs** saves `<Pack> (filtered).zip`
+  files to Downloads, or to the folder shown next to the button. Each zip contains the whole pack
+  (charts, audio, everything) with only the flagged images censored, and it extracts to a normal
+  pack folder. Packs with nothing to censor are skipped unless you tick
+  "Also save packs that had nothing to censor".
 - **Choose what gets censored**
   - **Strict**: also hides suggestive covers (swimsuits, underwear, revealing outfits).
   - **Balanced** (default): hides clearly sexualized covers and anything explicit.
@@ -27,9 +34,6 @@ it scans every image in the folder.
 - **Censor styles**: heavy blur, pixelate, solid color, or your own replacement image, with an
   optional "CENSORED" label. A live preview shows the result. Image size and file format stay the
   same, so the game doesn't notice anything changed.
-- **Undo anything.** Every original is backed up before it's changed. "Restore originals" puts
-  them back byte-for-byte, even after you move or rename the pack.
-  You can also write censored *copies* to another folder and leave your packs untouched.
 - **Fast.** Runs on the CPU with ONNX Runtime and caches results, so a re-scan is almost
   instant. The default model is bundled, so it works offline. A larger "Accurate" model can be
   downloaded from the settings.
@@ -46,11 +50,12 @@ Get the latest build for your OS from the **Releases** page:
 
 ## How to use
 
-1. Close Etterna, or at least don't play the packs you're filtering.
-2. Open Pack Filter and drop in your packs, or click **Add packs**.
-3. Wait for the scan to finish. The **Will censor** tab lists what will be changed.
-4. Adjust the settings on the right. The list updates instantly, with no re-scan.
-5. Click **Censor N images**.
+1. Open Pack Filter and drop in your packs, or click **Add packs**.
+2. Wait for the scan to finish. The **Will censor** tab lists what will be blurred.
+3. Adjust the settings on the right. The list updates instantly, with no re-scan.
+4. Click **Download N filtered packs**. When it's done, click **Show in folder**.
+5. Extract the filtered zips into your Etterna `Songs` folder, replacing the original packs if
+   you already had them installed.
 
 If Etterna still shows old covers, restart it. If they still don't change, delete the `Cache`
 folder in your Etterna install so Etterna rebuilds its banner cache.
@@ -70,9 +75,10 @@ packfilter-cli scan ~/Etterna/Songs
 ### Command line
 
 ```bash
-packfilter-cli scan  PATH...  [--preset strict|balanced|explicit] [--strictness 0-100] [--json]
-packfilter-cli apply PATH...  [--style blur|pixelate|solid] [--copy-to DIR] [--extract-to DIR]
-packfilter-cli restore PATH...
+packfilter-cli scan    PATH...  [--preset strict|balanced|explicit] [--strictness 0-100] [--json]
+packfilter-cli export  PATH...  [--to DIR] [--include-unchanged] [--style blur|pixelate|solid]
+packfilter-cli apply   PATH...  # advanced: censor inside the packs, backing up originals
+packfilter-cli restore PATH...  # undo `apply`, byte-for-byte
 ```
 
 `PATH` can be a pack, a Songs folder, or a `.zip`.
@@ -100,8 +106,9 @@ the labelled sample images (general / sensitive / questionable / explicit, **NSF
 model's authors publish in the imgutils docs. It checks:
 
 - explicit and sexual covers are flagged and clean packs are left alone
-- censored output no longer rates as lewd
-- restore gives back identical files
+- the exported zips contain no image the model still rates as lewd
+- the source packs are unchanged
+- `apply` followed by `restore` gives back identical files
 
 It also checks that our inference matches `imgutils.validate.anime_dbrating_score`.
 `tools/make_test_packs.py OUT_DIR` generates the same packs so you can try the app by hand.

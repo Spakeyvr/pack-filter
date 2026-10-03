@@ -198,27 +198,25 @@ class SettingsPanel(QWidget):
 
         # --- Where to save -------------------------------------------------------
         lay.addSpacing(6)
-        lay.addWidget(section("Where to save"))
-        self.inplace = QRadioButton("Edit the packs directly")
-        self.copy = QRadioButton("Save censored copies to another folder")
-        og = QButtonGroup(self)
-        og.addButton(self.inplace)
-        og.addButton(self.copy)
-        lay.addWidget(self.inplace)
-        lay.addWidget(hint("Originals are backed up, so you can undo with \"Restore originals\" at any time."))
-        lay.addWidget(self.copy)
+        lay.addWidget(section("Save filtered packs to"))
         self.dest_row = QWidget()
         dr = QHBoxLayout(self.dest_row)
         dr.setContentsMargins(0, 0, 0, 0)
         self.dest = QLineEdit()
-        self.dest.setPlaceholderText("Choose an output folder")
         self.dest.setReadOnly(True)
         dr.addWidget(self.dest, 1)
-        b = QPushButton("Browse...")
+        b = QPushButton("Change...")
         b.clicked.connect(self._pick_dest)
         dr.addWidget(b)
         lay.addWidget(self.dest_row)
-        self.inplace.toggled.connect(self._output_changed)
+        self.reset_dest = QPushButton("Use my Downloads folder")
+        self.reset_dest.setObjectName("Flat")
+        self.reset_dest.clicked.connect(self._reset_dest)
+        lay.addWidget(self.reset_dest, 0, Qt.AlignLeft)
+        lay.addWidget(hint("Each filtered pack is saved as its own .zip. Your original packs are never changed."))
+        self.unchanged_box = QCheckBox("Also save packs that had nothing to censor")
+        self.unchanged_box.toggled.connect(self._output_changed)
+        lay.addWidget(self.unchanged_box)
 
         # --- Detection model -----------------------------------------------------
         lay.addSpacing(6)
@@ -254,8 +252,9 @@ class SettingsPanel(QWidget):
             self.strength.setValue(s.style_strength)
             self.label_box.setChecked(s.add_label)
             self.image_path.setText(s.replacement_image)
-            (self.copy if s.output_mode == "copy" else self.inplace).setChecked(True)
-            self.dest.setText(s.copy_destination)
+            self.dest.setText(str(s.output_path()))
+            self.reset_dest.setVisible(bool(s.output_dir))
+            self.unchanged_box.setChecked(s.export_unchanged)
             self.model_box.setCurrentIndex(max(0, self.model_box.findData(s.model)))
             self.show_previews.setChecked(s.show_previews)
         finally:
@@ -278,7 +277,6 @@ class SettingsPanel(QWidget):
         self.strength_row.setVisible(st in ("blur", "pixelate"))
         self.color_btn.setVisible(st == "solid")
         self.image_row.setVisible(st == "image")
-        self.dest_row.setEnabled(self.settings.output_mode == "copy")
         self.color_btn.setStyleSheet(f"QPushButton {{ border-left: 18px solid {self.settings.solid_color}; }}")
 
     def _update_strict_label(self) -> None:
@@ -360,18 +358,22 @@ class SettingsPanel(QWidget):
     def _output_changed(self) -> None:
         if self._loading:
             return
-        self.settings.output_mode = "inplace" if self.inplace.isChecked() else "copy"
-        if self.settings.output_mode == "copy" and not self.settings.copy_destination:
-            self._pick_dest()
-        self._update_visibility()
+        self.settings.export_unchanged = self.unchanged_box.isChecked()
         self.changed.emit("output")
 
     def _pick_dest(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Save censored packs to")
+        path = QFileDialog.getExistingDirectory(self, "Save filtered packs to", str(self.settings.output_path()))
         if path:
-            self.settings.copy_destination = path
+            self.settings.output_dir = path
             self.dest.setText(path)
+            self.reset_dest.setVisible(True)
             self.changed.emit("output")
+
+    def _reset_dest(self) -> None:
+        self.settings.output_dir = ""
+        self.dest.setText(str(self.settings.output_path()))
+        self.reset_dest.setVisible(False)
+        self.changed.emit("output")
 
     def _model_changed(self) -> None:
         if self._loading:

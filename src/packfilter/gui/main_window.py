@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -18,7 +21,7 @@ from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEd
 
 from .. import APP_NAME, __version__
 from ..engine import ApplyResult, Engine, Item, extract_zip, items_from_packs
-from ..paths import data_dir
+from ..paths import data_dir, work_dir
 from ..policy import Settings
 from ..scanner import CATEGORIES
 from . import theme
@@ -54,6 +57,26 @@ def etterna_song_folders() -> list[Path]:
         except OSError:
             pass
     return out
+
+
+def reveal_in_file_manager(path: Path) -> None:
+    """Open the file manager with ``path`` selected (or its folder, where selecting isn't supported)."""
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(path)])
+            return
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", str(path)])
+            return
+    except OSError:
+        pass
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+
+
+def clean_stale_work_dirs() -> None:
+    """Remove leftovers from a previous run that didn't exit cleanly."""
+    for d in work_dir().glob("extract-*"):
+        shutil.rmtree(d, ignore_errors=True)
 
 
 class DropZone(QFrame):
@@ -92,7 +115,8 @@ class DropZone(QFrame):
             b.clicked.connect(lambda _=False, f=folder: on_etterna(f))
             self.etterna_btns.addWidget(b)
         lay.addSpacing(10)
-        note = QLabel("Nothing is changed until you press \"Censor\". Originals are always backed up.")
+        note = QLabel("Your packs are never modified. Filtered copies are saved as .zip files "
+                      "(to Downloads unless you pick another folder).")
         note.setObjectName("Hint")
         note.setAlignment(Qt.AlignCenter)
         lay.addWidget(note)
@@ -118,6 +142,9 @@ class MainWindow(QMainWindow):
         self.pack_roots: dict[Path, str] = {}
         self.task: Optional[Task] = None
         self._queue: list[Callable[[], None]] = []
+        self._temp_dirs: list[Path] = []          # unpacked zip packs, deleted on exit
+        self._sources: dict[Path, Path] = {}      # unpacked folder -> the .zip it came from
+        clean_stale_work_dirs()
         self._save_timer = QTimer(self, singleShot=True, interval=400, timeout=self._save_settings)
         self._refresh_timer = QTimer(self, singleShot=True, interval=60, timeout=self._refresh_view)
 
@@ -165,12 +192,17 @@ class MainWindow(QMainWindow):
         header.addWidget(self.rescan_btn)
         header.addStretch(1)
         self.restore_all_btn = QPushButton("Restore originals")
-        self.restore_all_btn.setToolTip("Undo censoring for every image in the list")
+        self.restore_all_btn.setToolTip("Undo censoring done directly inside these packs (e.g. by the command line)")
         self.restore_all_btn.clicked.connect(self.restore_all)
         header.addWidget(self.restore_all_btn)
-        self.apply_btn = QPushButton("Censor")
+        self.dest_btn = QPushButton()
+        self.dest_btn.setObjectName("Flat")
+        self.dest_btn.setCursor(Qt.PointingHandCursor)
+        self.dest_btn.setToolTip("Click to choose where filtered packs are saved")
+        header.addWidget(self.dest_btn)
+        self.apply_btn = QPushButton("Download")
         self.apply_btn.setObjectName("Primary")
-        self.apply_btn.clicked.connect(self.apply)
+        self.apply_btn.clicked.connect(self.download)
         header.addWidget(self.apply_btn)
         root.addLayout(header)
 
@@ -255,6 +287,7 @@ class MainWindow(QMainWindow):
 
         self.settings_panel = SettingsPanel(self.settings)
         self.settings_panel.changed.connect(self._settings_changed)
+        self.dest_btn.clicked.connect(self.settings_panel._pick_dest)
         self.splitter.addWidget(self.settings_panel)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
@@ -351,11 +384,17 @@ class MainWindow(QMainWindow):
         n_censor = sum(it.will_censor(s) for it in self.items)
         n_done = sum(it.censored for it in self.items)
         busy = self._busy()
-        verb = "Save" if s.output_mode == "copy" else "Censor"
-        self.apply_btn.setText(f"{verb} {n_censor} image{'s' if n_censor != 1 else ''}" if n_censor
-                               else "Nothing to censor")
-        self.apply_btn.setEnabled(n_censor > 0 and not busy)
-        self.restore_all_btn.setEnabled(n_done > 0 and not busy)
+        n_packs = len(self._export_roots())
+        self.apply_btn.setText(f"Download {n_packs} filtered pack{'s' if n_packs != 1 else ''}" if n_packs
+                               else "Nothing to filter")
+        self.apply_btn.setToolTip(f"{n_censor} image(s) will be censored. Saves one .zip per pack to "
+                                  f"{s.output_path()}")
+        self.apply_btn.setEnabled(n_packs > 0 and not busy)
+        out = s.output_path()
+        self.dest_btn.setText(f"Save to: {out.name or str(out)}")
+        self.dest_btn.setToolTip(f"Filtered packs are saved to {out}. Click to change.")
+        self.restore_all_btn.setVisible(n_done > 0)
+        self.restore_all_btn.setEnabled(not busy)
         self.rescan_btn.setEnabled(bool(self.items) and not busy)
         self.add_btn.setEnabled(not busy)
         self.remove_pack_btn.setEnabled(self._current_pack() is not None and not busy)
@@ -377,7 +416,8 @@ class MainWindow(QMainWindow):
                 extra.append(f"{d} censored")
             li.setText(f"{name}\n{len(its)} image{'s' if len(its) != 1 else ''}"
                        + (" · " + " · ".join(extra) if extra else ""))
-            li.setToolTip(key if key != ALL_PACKS else "")
+            src = self._sources.get(Path(key)) if key != ALL_PACKS else None
+            li.setToolTip(str(src) if src else (key if key != ALL_PACKS else ""))
 
     def _update_everything(self) -> None:
         self.stack.setCurrentIndex(1 if self.items or self._busy() else 0)
@@ -480,23 +520,21 @@ class MainWindow(QMainWindow):
             self.add_zips([Path(f) for f in files])
 
     def add_zips(self, zips: list[Path]) -> None:
-        start = self.settings.zip_destination or (str(etterna_song_folders()[0]) if etterna_song_folders()
-                                                  else str(zips[0].parent))
-        dest = QFileDialog.getExistingDirectory(
-            self, "Where should the packs be extracted to? (usually your Etterna Songs folder)", start)
-        if not dest:
-            return
-        self.settings.zip_destination = dest
-        self._save_timer.start()
+        """Unpack downloaded packs into a private scratch folder; they come back out as filtered zips."""
+        tmp = Path(tempfile.mkdtemp(prefix="extract-", dir=work_dir()))
+        self._temp_dirs.append(tmp)
 
         def work(progress, cancel):
             out = []
             for i, z in enumerate(zips):
-                progress(i, len(zips), f"Extracting {z.name}...")
-                out.append(extract_zip(z, Path(dest), cancel))
+                progress(i, len(zips), f"Unpacking {z.name}...")
+                folder = extract_zip(z, tmp / str(i), cancel)
+                self._sources[folder.resolve()] = z
+                out.append(folder)
             return out
 
-        self._after_idle(lambda: self._run(work, self.add_paths, "Extracting packs..."))
+        self._after_idle(lambda: self._run(work, self.add_paths, "Unpacking zip packs..."))
+        self.stack.setCurrentIndex(1)
 
     def add_paths(self, paths: list[Path]) -> None:
         if self._busy():
@@ -537,7 +575,8 @@ class MainWindow(QMainWindow):
         def done(n):
             self._update_everything()
             n_flag = sum(it.will_censor(self.settings) for it in self.items)
-            self.status.setText(f"Checked {n} images. {n_flag} would be censored with the current settings.")
+            self.status.setText(f"Checked {len(self.items)} images. {n_flag} would be censored with the "
+                                "current settings.")
 
         self._after_idle(lambda: self._run(work, done, "Checking images..."))
 
@@ -567,7 +606,12 @@ class MainWindow(QMainWindow):
         if not li or li.data(Qt.UserRole) == ALL_PACKS:
             return
         menu = QMenu(self)
-        menu.addAction("Open folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(li.data(Qt.UserRole))))
+        src = self._sources.get(Path(li.data(Qt.UserRole)))
+        if src:
+            menu.addAction("Show the original .zip", lambda: reveal_in_file_manager(src))
+        else:
+            menu.addAction("Open folder",
+                           lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(li.data(Qt.UserRole))))
         menu.addAction("Remove from list", self.remove_selected_pack)
         menu.exec(self.pack_list.mapToGlobal(pos))
 
@@ -610,52 +654,44 @@ class MainWindow(QMainWindow):
             pass
 
     # ============================================================ apply ==
-    def apply(self) -> None:
+    def _export_roots(self) -> set[Path]:
+        if self.settings.export_unchanged:
+            return {it.pack_root for it in self.items}
+        return {it.pack_root for it in self.items if it.will_censor(self.settings)}
+
+    def download(self) -> None:
         s = dataclasses.replace(self.settings, categories=list(self.settings.categories))
-        targets = [it for it in self.items if it.will_censor(s)]
-        if not targets:
+        if not self._export_roots():
             return
-        packs = len({it.pack_root for it in targets})
-        if s.output_mode == "copy":
-            if not s.copy_destination:
-                self.settings_panel._pick_dest()
-                s.copy_destination = self.settings.copy_destination
-                if not s.copy_destination:
-                    return
-            msg = (f"Copy {len({it.pack_root for it in self.items})} pack(s) to\n{s.copy_destination}\n\n"
-                   f"and censor {len(targets)} image(s) in the copies? Your original packs are not changed.")
-        else:
-            msg = (f"Censor {len(targets)} image(s) in {packs} pack(s)?\n\n"
-                   "The original images are backed up, so you can undo this any time with "
-                   "\"Restore originals\".")
-        if QMessageBox.question(self, APP_NAME, msg) != QMessageBox.Yes:
-            return
+        dest = s.output_path()
         items = list(self.items)
 
         def work(progress, cancel):
-            return self.engine.apply(items, s, progress, cancel)
+            return self.engine.export_zips(items, s, dest, progress, cancel)
 
         def done(res: ApplyResult):
             self._update_everything()
-            text = f"Censored {res.censored} image(s)."
-            if res.output_roots:
-                text += f"\n\nThe censored packs were saved to:\n{s.copy_destination}"
-            text += ("\n\nTip: if Etterna still shows the old covers, restart it. If they still appear, "
-                     "delete the \"Cache\" folder inside your Etterna folder so it rebuilds its banner cache.")
+            n = len(res.output_roots)
+            self.status.setText(f"Saved {n} filtered pack(s) to {dest}")
+            names = "\n".join(f"  •  {z.name}" for z in res.output_roots[:12])
+            if n > 12:
+                names += f"\n  ... and {n - 12} more"
+            text = (f"Saved {n} filtered pack{'s' if n != 1 else ''} to {dest} "
+                    f"({res.censored} image{'s' if res.censored != 1 else ''} censored):\n\n{names}\n\n"
+                    "To play them, extract each zip into your Etterna \"Songs\" folder (or add them the way "
+                    "you normally add downloaded packs).")
             if res.errors:
-                text += f"\n\n{len(res.errors)} image(s) could not be changed:\n" + "\n".join(res.errors[:8])
+                text += (f"\n\n{len(res.errors)} image(s) couldn't be processed and were left out:\n"
+                         + "\n".join(res.errors[:6]))
             box = QMessageBox(QMessageBox.Warning if res.errors else QMessageBox.Information, APP_NAME, text,
                               parent=self)
-            if res.output_roots:
-                open_btn = box.addButton("Open folder", QMessageBox.ActionRole)
-                box.addButton(QMessageBox.Ok)
-                box.exec()
-                if box.clickedButton() is open_btn:
-                    QDesktopServices.openUrl(QUrl.fromLocalFile(s.copy_destination))
-            else:
-                box.exec()
+            show_btn = box.addButton("Show in folder", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Ok)
+            box.exec()
+            if box.clickedButton() is show_btn and res.output_roots:
+                reveal_in_file_manager(res.output_roots[0])
 
-        self._run(work, done, "Censoring...")
+        self._run(work, done, "Creating filtered packs...")
 
     def _restore(self, items: list[Item], confirm: bool) -> None:
         items = [it for it in items if it.censored]
@@ -714,5 +750,7 @@ class MainWindow(QMainWindow):
     def shutdown(self) -> None:
         if self.task:
             self.task.cancel()
+        for d in self._temp_dirs:
+            shutil.rmtree(d, ignore_errors=True)
         self._save_settings()
         self.loader.shutdown()

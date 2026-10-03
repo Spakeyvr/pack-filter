@@ -64,11 +64,10 @@ class Settings:
     solid_color: str = "#101014"
     replacement_image: str = ""
     add_label: bool = True
-    output_mode: str = "inplace"       # inplace / copy
-    copy_destination: str = ""
+    output_dir: str = ""               # where filtered .zip packs go; "" = Downloads
+    export_unchanged: bool = False     # also export packs that had nothing to censor
     model: str = DEFAULT_MODEL
     show_previews: bool = False        # show un-blurred thumbnails of flagged images
-    zip_destination: str = ""
 
     def apply_preset(self, key: str) -> None:
         preset = PRESETS_BY_KEY.get(key)
@@ -76,6 +75,11 @@ class Settings:
         if preset:
             self.min_level = preset.min_level
             self.strictness = preset.strictness
+
+    def output_path(self) -> Path:
+        from .paths import downloads_dir
+        p = Path(self.output_dir).expanduser() if self.output_dir else downloads_dir()
+        return p if p.is_dir() else downloads_dir()
 
     @property
     def threshold(self) -> float:

@@ -1,5 +1,6 @@
 """Engine tests with a fake model so they run offline and fast."""
 
+import io
 import zipfile
 
 import pytest
@@ -97,18 +98,45 @@ def test_overrides_and_category_filter(engine, pack):
     assert engine.store.lookup_censored(sha256_file(pack / "Clean" / "bn.png"))
 
 
-def test_copy_mode_leaves_source_untouched(engine, pack, tmp_path):
-    before = sha256_file(pack / "Lewd" / "bn.png")
-    items = classify(engine, pack)
-    s = Settings(output_mode="copy", copy_destination=str(tmp_path / "out"))
-    res = engine.apply(list(items.values()), s)
-    assert res.censored == 3
-    assert sha256_file(pack / "Lewd" / "bn.png") == before
-    copied = tmp_path / "out" / "Pack" / "Lewd" / "bn.png"
-    assert engine.store.lookup_censored(sha256_file(copied))
-    assert (tmp_path / "out" / "Pack" / "Clean" / "bn.png").exists()
-    with pytest.raises(ValueError):
-        engine.apply(list(items.values()), Settings(output_mode="copy", copy_destination=str(pack.parent)))
+def test_export_zips_leaves_source_untouched(engine, pack, tmp_path):
+    before = {p: sha256_file(p) for p in pack.rglob("*") if p.is_file()}
+    # A second, clean pack: skipped unless export_unchanged is on.
+    clean = pack.parent / "Clean Pack"
+    write_sm(clean / "Song", banner="bn.png")
+    make_image(clean / "Song" / "bn.png", CLEAN)
+    items = list(classify(engine, pack.parent).values())
+    out = tmp_path / "out"
+
+    res = engine.export_zips(items, Settings(), out)
+    assert [z.name for z in res.output_roots] == ["Pack (filtered).zip"]
+    assert res.censored == 3 and not res.errors
+    assert {p: sha256_file(p) for p in before} == before
+
+    with zipfile.ZipFile(out / "Pack (filtered).zip") as zf:
+        names = set(zf.namelist())
+        assert "Pack/Lewd/Lewd.sm" in names and "Pack/Clean/bn.png" in names
+        assert "Pack/Broken/bn.png" in names  # unreadable files are copied as-is (game ignores them too)
+        assert zf.read("Pack/Clean/bn.png") == (pack / "Clean" / "bn.png").read_bytes()
+        assert zf.read("Pack/Lewd/bn.png") != (pack / "Lewd" / "bn.png").read_bytes()
+        with Image.open(io.BytesIO(zf.read("Pack/Lewd/bg.jpg"))) as im:
+            assert im.format == "JPEG" and im.size == (320, 180)
+        with Image.open(io.BytesIO(zf.read("Pack/Lewd/cdtitle.png"))) as im:
+            assert im.mode == "RGBA" and im.getpixel((0, 0))[3] == 0
+
+    # Exporting again doesn't overwrite; unchanged packs can be included.
+    res = engine.export_zips(items, Settings(export_unchanged=True), out)
+    assert sorted(z.name for z in res.output_roots) == ["Clean Pack (filtered).zip", "Pack (filtered) 2.zip"]
+
+
+def test_export_cancel_leaves_no_partial_zip(engine, pack, tmp_path):
+    import threading
+    from packfilter.engine import Cancelled
+    items = list(classify(engine, pack).values())
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(Cancelled):
+        engine.export_zips(items, Settings(), tmp_path / "out", cancel=cancel)
+    assert list((tmp_path / "out").iterdir()) == []
 
 
 def test_restore_after_pack_moved(engine, pack, tmp_path):

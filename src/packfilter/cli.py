@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from .engine import Engine, extract_zip, items_from_packs
 from .model import LABELS, MODELS
-from .paths import data_dir
+from .paths import data_dir, work_dir
 from .policy import CENSOR_STYLES, PRESETS_BY_KEY, Settings, top_label
 from .scanner import CATEGORIES
 
@@ -32,10 +34,10 @@ def _settings(args) -> Settings:
         s.categories = args.categories
     if getattr(args, "style", None):
         s.style = args.style
-    if getattr(args, "copy_to", None):
-        s.output_mode, s.copy_destination = "copy", str(args.copy_to)
-    elif hasattr(args, "copy_to"):
-        s.output_mode = "inplace"
+    if getattr(args, "to", None):
+        s.output_dir = str(args.to)
+    if getattr(args, "include_unchanged", False):
+        s.export_unchanged = True
     if args.model:
         s.model = args.model
     return s
@@ -57,8 +59,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="packfilter-cli",
                                      description="Censor sexualized cover art in rhythm game song packs.")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name, help_ in (("scan", "report what would be censored"), ("apply", "censor flagged images"),
-                        ("restore", "put original images back")):
+    for name, help_ in (("scan", "report what would be censored"),
+                        ("export", "write a filtered .zip of each pack (originals untouched)"),
+                        ("apply", "censor flagged images inside the packs (originals backed up)"),
+                        ("restore", "put original images back after 'apply'")):
         p = sub.add_parser(name, help=help_)
         p.add_argument("paths", nargs="+", type=Path, help="pack folders, Songs folders or .zip files")
         p.add_argument("--preset", choices=sorted(PRESETS_BY_KEY))
@@ -66,16 +70,34 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--strictness", type=int, help="0-100, higher censors more (default 50)")
         p.add_argument("--categories", nargs="+", choices=CATEGORIES)
         p.add_argument("--model", choices=sorted(MODELS))
-        p.add_argument("--extract-to", type=Path, help="where to extract .zip packs (default: next to the zip)")
+        p.add_argument("--extract-to", type=Path,
+                       help="where to extract .zip packs (default: a temporary folder for scan/export, "
+                            "next to the zip for apply)")
         p.add_argument("--json", action="store_true", help="print machine-readable results")
-        if name == "apply":
+        if name in ("apply", "export"):
             p.add_argument("--style", choices=CENSOR_STYLES)
-            p.add_argument("--copy-to", type=Path, help="write censored copies here instead of editing in place")
+        if name == "export":
+            p.add_argument("--to", type=Path, help="output folder (default: your Downloads folder)")
+            p.add_argument("--include-unchanged", action="store_true",
+                           help="also export packs that had nothing to censor")
     args = parser.parse_args(argv)
 
     settings = _settings(args)
     engine = Engine()
-    packs = engine.collect(_resolve_inputs(args.paths, args.extract_to))
+    extract_to = args.extract_to
+    temp_dir = None
+    if extract_to is None and args.cmd != "apply" and any(p.suffix.lower() == ".zip" for p in args.paths):
+        temp_dir = Path(tempfile.mkdtemp(prefix="extract-", dir=work_dir()))
+        extract_to = temp_dir
+    try:
+        return _run(args, settings, engine, extract_to)
+    finally:
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _run(args, settings: Settings, engine: Engine, extract_to: Path | None) -> int:
+    packs = engine.collect(_resolve_inputs(args.paths, extract_to))
     items = items_from_packs(packs)
     if not items:
         print("No images found.", file=sys.stderr)
@@ -84,7 +106,17 @@ def main(argv: list[str] | None = None) -> int:
     if sys.stderr.isatty():
         sys.stderr.write("\n")
 
-    if args.cmd == "apply":
+    if args.cmd == "export":
+        dest = settings.output_path()
+        res = engine.export_zips(items, settings, dest, _progress)
+        if sys.stderr.isatty():
+            sys.stderr.write("\n")
+        print(f"Censored {res.censored} image(s) in {len(res.output_roots)} filtered pack(s):", file=sys.stderr)
+        for z in res.output_roots:
+            print(f"  {z}", file=sys.stderr)
+        for e in res.errors:
+            print("  " + e, file=sys.stderr)
+    elif args.cmd == "apply":
         res = engine.apply(items, settings, _progress)
         print(f"Censored {res.censored} image(s); {len(res.errors)} error(s).", file=sys.stderr)
         for e in res.errors:

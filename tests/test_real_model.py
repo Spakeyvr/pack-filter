@@ -106,3 +106,30 @@ def test_censors_lewd_packs_end_to_end(model_ready, test_packs):
     assert sum(it.censored for it in rescanned) == len(flagged)
     engine.restore(rescanned)
     assert {p: sha256_file(p) for p in originals} == originals
+
+
+def test_exported_zips_contain_no_lewd_covers(model_ready, test_packs, tmp_path):
+    import zipfile
+    engine = Engine()
+    zip_dir = tmp_path / "unzipped-input"
+    from packfilter.engine import extract_zip
+    inputs = [test_packs["songs"], extract_zip(test_packs["zip"], zip_dir)]
+    items = items_from_packs(engine.collect(inputs))
+    engine.classify(items, Settings().model)
+    before = {it.path: sha256_file(it.path) for it in items if not it.error}
+
+    out = tmp_path / "Downloads"
+    res = engine.export_zips(items, Settings(), out)
+    names = sorted(z.name for z in res.output_roots)
+    assert names == ["Lewd Covers Pack (filtered).zip", "Mixed Bag Pack (filtered).zip",
+                     "Zipped Lewd Pack (filtered).zip", "osu! Beatmaps (filtered).zip"]
+    assert {p: sha256_file(p) for p in before} == before
+
+    extracted = tmp_path / "extracted"
+    for z in res.output_roots:
+        with zipfile.ZipFile(z) as zf:
+            zf.extractall(extracted)
+    rescanned = items_from_packs(Engine().collect([extracted]))
+    Engine().classify(rescanned, Settings().model)
+    assert len(rescanned) > 40
+    assert not [it.path for it in rescanned if it.will_censor(Settings())]
