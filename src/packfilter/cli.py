@@ -74,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
                        help="where to extract .zip packs (default: a temporary folder for scan/export, "
                             "next to the zip for apply)")
         p.add_argument("--json", action="store_true", help="print machine-readable results")
+        p.add_argument("--cpu", action="store_true", help="don't use the GPU even if one is available")
         if name in ("apply", "export"):
             p.add_argument("--style", choices=CENSOR_STYLES)
         if name == "export":
@@ -102,7 +103,10 @@ def _run(args, settings: Settings, engine: Engine, extract_to: Path | None) -> i
     if not items:
         print("No images found.", file=sys.stderr)
         return 1
-    engine.classify(items, settings.model, _progress)
+    engine.classify(items, settings.model, _progress, use_gpu=settings.use_gpu and not args.cpu)
+    m = engine._model
+    note = f" (GPU not used: {m.gpu_note})" if m and m.device == "CPU" and m.gpu_note else ""
+    print(f"\nModel ran on {engine.device}{note}", file=sys.stderr)
     if sys.stderr.isatty():
         sys.stderr.write("\n")
 

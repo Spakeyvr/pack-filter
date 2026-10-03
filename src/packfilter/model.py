@@ -11,6 +11,7 @@ import json
 import shutil
 import ssl
 import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,10 +146,48 @@ def preprocess(img: Image.Image) -> np.ndarray:
     return ((data - 0.5) / 0.5).astype(np.float32)
 
 
-class RatingModel:
-    """Thread-safe wrapper around the ONNX session."""
+# GPU back-ends we try, best first. CoreML is deliberately absent: on Apple Silicon it was
+# slower than the CPU for these models and gave wrong scores for the default one.
+GPU_PROVIDERS = {
+    "CUDAExecutionProvider": "NVIDIA CUDA",
+    "DmlExecutionProvider": "DirectML",
+}
+# GPU results must match the CPU this closely (scores are probabilities).
+GPU_TOLERANCE = 0.02
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, model_dir: Optional[Path] = None):
+
+def _session(ort, path: Path, provider: str):
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3
+    if provider == "DmlExecutionProvider":
+        # Required by DirectML: no memory pattern, sequential execution.
+        opts.enable_mem_pattern = False
+        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    providers = [provider] if provider == "CPUExecutionProvider" else [provider, "CPUExecutionProvider"]
+    sess = ort.InferenceSession(str(path), sess_options=opts, providers=providers)
+    if sess.get_providers()[0] != provider:
+        raise RuntimeError(f"{provider} could not be initialised")
+    return sess
+
+
+def _timed(sess, name: str, x: np.ndarray, repeats: int = 2) -> tuple[np.ndarray, float]:
+    out = sess.run(None, {name: x})[0]  # warm-up (GPU kernels compile on first run)
+    t = time.perf_counter()
+    for _ in range(repeats):
+        out = sess.run(None, {name: x})[0]
+    return out, (time.perf_counter() - t) / repeats
+
+
+class RatingModel:
+    """Thread-safe wrapper around the ONNX session.
+
+    With ``use_gpu`` it tries CUDA, then DirectML (any DirectX 12 GPU on Windows). A GPU is
+    only kept if it reproduces the CPU's scores and is actually faster; otherwise the CPU
+    is used. ``device`` describes what was picked, ``gpu_note`` why a GPU wasn't.
+    """
+
+    def __init__(self, model_name: str = DEFAULT_MODEL, model_dir: Optional[Path] = None,
+                 use_gpu: bool = False):
         import onnxruntime as ort
 
         self.model_name = model_name
@@ -157,13 +196,48 @@ class RatingModel:
             raise FileNotFoundError(f"Model {model_name} is not downloaded yet; call ensure_model() first")
         with open(model_dir / "meta.json", "r", encoding="utf-8") as fh:
             self.labels = tuple(json.load(fh)["labels"])
-        opts = ort.SessionOptions()
-        opts.log_severity_level = 3
-        self._session = ort.InferenceSession(str(model_dir / "model.onnx"), sess_options=opts,
-                                             providers=["CPUExecutionProvider"])
+        path = model_dir / "model.onnx"
+        self._session = _session(ort, path, "CPUExecutionProvider")
         self._input = self._session.get_inputs()[0].name
         self._output = self._session.get_outputs()[0].name
+        self.device = "CPU"
+        self.provider = "CPUExecutionProvider"
+        self.gpu_note = ""
+        self.batch_size = 16
         self._lock = threading.Lock()
+        if use_gpu:
+            self._try_gpu(ort, path)
+
+    def _try_gpu(self, ort, path: Path) -> None:
+        available = set(ort.get_available_providers())
+        candidates = [p for p in GPU_PROVIDERS if p in available]
+        if not candidates:
+            self.gpu_note = "no GPU support in this build of ONNX Runtime"
+            return
+        x = np.random.RandomState(0).uniform(-1, 1, (8, 3, INPUT_SIZE, INPUT_SIZE)).astype(np.float32)
+        cpu_out, cpu_time = _timed(self._session, self._input, x)
+        notes = []
+        for provider in candidates:
+            name = GPU_PROVIDERS[provider]
+            try:
+                sess = _session(ort, path, provider)
+                gpu_out, gpu_time = _timed(sess, self._input, x)
+            except Exception as exc:  # driver problems, missing CUDA libraries, ...
+                notes.append(f"{name} unavailable ({str(exc).splitlines()[0][:120]})")
+                continue
+            diff = float(np.abs(gpu_out - cpu_out).max())
+            if diff > GPU_TOLERANCE:
+                notes.append(f"{name} gave different results (off by {diff:.2f})")
+                continue
+            if gpu_time >= cpu_time:
+                notes.append(f"{name} was not faster than the CPU")
+                continue
+            self._session, self.provider = sess, provider
+            self.device = f"GPU ({name})"
+            self.batch_size = 32
+            self.speedup = cpu_time / gpu_time
+            return
+        self.gpu_note = "; ".join(notes)
 
     def predict_batch(self, arrays: Sequence[np.ndarray]) -> list[dict[str, float]]:
         if not arrays:

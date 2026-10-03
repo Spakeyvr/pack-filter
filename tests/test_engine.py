@@ -18,6 +18,8 @@ CLEAN = (0, 0, 255)
 
 class FakeModel:
     model_name = "fake"
+    batch_size = 16
+    device = "CPU"
 
     def predict_batch(self, arrays):
         out = []

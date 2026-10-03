@@ -12,7 +12,10 @@ license = { text = "MIT" }
 dependencies = [
     "numpy>=1.24",
     "pillow>=10.1",
-    "onnxruntime>=1.17",
+    # Windows gets the DirectML build, which runs on any DirectX 12 GPU (NVIDIA/AMD/Intel)
+    # and falls back to the CPU. For NVIDIA CUDA on Linux, install onnxruntime-gpu instead.
+    "onnxruntime>=1.17; sys_platform != 'win32'",
+    "onnxruntime-directml>=1.17; sys_platform == 'win32'",
     "PySide6>=6.6",
     "certifi",
 ]

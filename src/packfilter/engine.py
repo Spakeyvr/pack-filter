@@ -23,7 +23,6 @@ from .store import Store, sha256_bytes
 ProgressFn = Callable[[int, int, str], None]  # (done, total, message)
 
 CHUNK = 64
-BATCH = 16
 
 
 class Cancelled(Exception):
@@ -152,19 +151,28 @@ class Engine:
         self.store = store or Store()
         self.model_name = model_name
         self._model: Optional[RatingModel] = None
+        self._model_gpu = False
         self._model_lock = threading.Lock()
 
     # --- model ---------------------------------------------------------------
     def model(self, model_name: str, progress: Optional[ProgressFn] = None,
-              cancel: Optional[threading.Event] = None) -> RatingModel:
+              cancel: Optional[threading.Event] = None, use_gpu: bool = False) -> RatingModel:
         with self._model_lock:
-            if self._model is None or self._model.model_name != model_name:
+            m = self._model
+            if m is None or m.model_name != model_name or self._model_gpu != use_gpu:
                 def dl(done, total):
                     if progress:
                         progress(done, total, "Downloading the rating model (one time only)...")
                 path = ensure_model(model_name, dl, cancel)
-                self._model = RatingModel(model_name, path)
+                if progress and use_gpu:
+                    progress(0, 0, "Checking whether the GPU can be used...")
+                self._model = RatingModel(model_name, path, use_gpu=use_gpu)
+                self._model_gpu = use_gpu
             return self._model
+
+    @property
+    def device(self) -> Optional[str]:
+        return self._model.device if self._model else None
 
     # --- scanning ------------------------------------------------------------
     @staticmethod
@@ -180,9 +188,11 @@ class Engine:
         return list(packs.values())
 
     def classify(self, items: list[Item], model_name: str, progress: Optional[ProgressFn] = None,
-                 cancel: Optional[threading.Event] = None) -> None:
+                 cancel: Optional[threading.Event] = None, use_gpu: bool = False) -> None:
         """Fill in sha/scores/censored for every item. Cached results are reused."""
-        model = self.model(model_name, progress, cancel)
+        model = self.model(model_name, progress, cancel, use_gpu)
+        batch_size = model.batch_size
+        chunk_size = max(CHUNK, batch_size * 4)
         total = len(items)
         done = 0
 
@@ -207,18 +217,19 @@ class Engine:
                 item.error = f"{type(exc).__name__}: {exc}"
                 return None
 
-        workers = max(2, min(8, (os.cpu_count() or 4)))
+        # Decoding images is the slow part once inference runs on a GPU, so use every core.
+        workers = max(2, min(16, (os.cpu_count() or 4)))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for start in range(0, total, CHUNK):
+            for start in range(0, total, chunk_size):
                 if cancel is not None and cancel.is_set():
                     raise Cancelled()
-                chunk = items[start:start + CHUNK]
+                chunk = items[start:start + chunk_size]
                 arrays = list(pool.map(prepare, chunk))
                 pending = [(it, arr) for it, arr in zip(chunk, arrays) if arr is not None]
-                for b in range(0, len(pending), BATCH):
+                for b in range(0, len(pending), batch_size):
                     if cancel is not None and cancel.is_set():
                         raise Cancelled()
-                    batch = pending[b:b + BATCH]
+                    batch = pending[b:b + batch_size]
                     for (it, _), scores in zip(batch, model.predict_batch([a for _, a in batch])):
                         it.scores = scores
                         self.store.put_scores(it.sha, model_name, scores)

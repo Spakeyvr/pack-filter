@@ -39,7 +39,15 @@ def self_test(app: QApplication) -> int:
     print("model:", model_dir)
     if model_dir is None:
         return 1
-    scores = RatingModel(DEFAULT_MODEL, model_dir).predict(sample_art())
+    import onnxruntime
+    providers = onnxruntime.get_available_providers()
+    print("onnxruntime:", onnxruntime.__version__, providers)
+    if sys.platform == "win32" and "DmlExecutionProvider" not in providers:
+        print("DirectML is missing from this build")
+        return 1
+    model = RatingModel(DEFAULT_MODEL, model_dir, use_gpu=True)
+    print("device:", model.device, f"({model.gpu_note})" if model.gpu_note else "")
+    scores = model.predict(sample_art())
     print("scores:", {k: round(v, 3) for k, v in scores.items()})
     buf = io.BytesIO()
     censor_image(sample_art(), Settings()).save(buf, "PNG")

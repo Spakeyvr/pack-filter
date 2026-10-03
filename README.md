@@ -31,12 +31,17 @@ it scans every image in the folder.
   - Override single images (or a whole selection) with **Censor** / **Keep**.
 - **Previews stay hidden.** Any thumbnail that might be lewd is blurred in the list. To see one,
   click "Show original".
-- **Censor styles**: heavy blur, pixelate, solid color, or your own replacement image, with an
-  optional "CENSORED" label. A live preview shows the result. Image size and file format stay the
-  same, so the game doesn't notice anything changed.
-- **Fast.** Runs on the CPU with ONNX Runtime and caches results, so a re-scan is almost
-  instant. The default model is bundled, so it works offline. A larger "Accurate" model can be
-  downloaded from the settings.
+- **Censor styles**: heavy blur, pixelate, solid color, or your own replacement image. A live
+  preview shows the result. Image size and file format stay the same, so the game doesn't
+  notice anything changed.
+- **Fast.** Results are cached, so a re-scan is almost instant. The default model is bundled,
+  so it works offline. A larger "Accurate" model can be downloaded from the settings.
+- **Uses your GPU on Windows.** It runs through DirectML, so any DirectX 12 card works (NVIDIA,
+  AMD, Intel) with no CUDA install needed. A GPU is only used if it gives the same scores as the
+  CPU and is actually faster; otherwise the app quietly uses the CPU. The status bar shows which
+  one is in use, and hovering over it explains why. On Linux, `pip install onnxruntime-gpu` in a
+  source install enables NVIDIA CUDA. macOS uses the CPU: Apple's CoreML backend was slower and
+  gave wrong scores for these models.
 
 ## Download
 

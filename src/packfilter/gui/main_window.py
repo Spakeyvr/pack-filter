@@ -313,6 +313,8 @@ class MainWindow(QMainWindow):
         self.progress.setFixedWidth(260)
         self.progress.setVisible(False)
         sb.addPermanentWidget(self.progress)
+        self.device_label = QLabel()
+        sb.addPermanentWidget(self.device_label)
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setVisible(False)
         self.cancel_btn.clicked.connect(self.cancel_task)
@@ -578,12 +580,14 @@ class MainWindow(QMainWindow):
         if not items:
             return
         model = self.settings.model
+        use_gpu = self.settings.use_gpu
 
         def work(progress, cancel):
-            self.engine.classify(items, model, progress, cancel)
+            self.engine.classify(items, model, progress, cancel, use_gpu=use_gpu)
             return len(items)
 
         def done(n):
+            self._update_device_label()
             self._update_everything()
             n_flag = sum(it.will_censor(self.settings) for it in self.items)
             self.status.setText(f"Checked {len(self.items)} images. {n_flag} would be censored with the "
@@ -657,6 +661,21 @@ class MainWindow(QMainWindow):
         elif what in ("filter", "preview", "output"):
             self._refresh_view()
             self.detail.refresh()
+
+    def _update_device_label(self) -> None:
+        m = self.engine._model
+        if m is None:
+            self.device_label.setText("")
+            return
+        self.device_label.setText(f"Running on {m.device}")
+        tip = f"The rating model runs on: {m.device}."
+        if m.device == "CPU" and self.settings.use_gpu and m.gpu_note:
+            tip += f"\nGPU not used: {m.gpu_note}."
+        elif m.device == "CPU" and not self.settings.use_gpu:
+            tip += "\nGPU use is switched off in the settings."
+        elif getattr(m, "speedup", None):
+            tip += f"\nAbout {m.speedup:.1f}x faster than the CPU for this model."
+        self.device_label.setToolTip(tip)
 
     def _save_settings(self) -> None:
         try:

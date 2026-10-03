@@ -67,6 +67,7 @@ class Settings:
     output_dir: str = ""               # where filtered .zip packs go; "" = Downloads
     export_unchanged: bool = False     # also export packs that had nothing to censor
     model: str = DEFAULT_MODEL
+    use_gpu: bool = True               # use a GPU when one is verified to be correct and faster
     show_previews: bool = False        # show un-blurred thumbnails of flagged images
 
     def apply_preset(self, key: str) -> None:

@@ -213,6 +213,11 @@ class SettingsPanel(QWidget):
         self.model_box.currentIndexChanged.connect(self._model_changed)
         lay.addWidget(self.model_box)
         lay.addWidget(hint("\"Accurate\" is slower and downloads a bigger model the first time."))
+        self.gpu_box = QCheckBox("Use the GPU when it's faster")
+        self.gpu_box.setToolTip("Windows: any DirectX 12 GPU (NVIDIA, AMD, Intel). The GPU is only used if it gives\n"
+                                "the same results as the CPU and is actually faster; otherwise the CPU is used.")
+        self.gpu_box.toggled.connect(self._gpu_changed)
+        lay.addWidget(self.gpu_box)
         self.show_previews = QCheckBox("Show uncensored thumbnails")
         self.show_previews.toggled.connect(self._previews_changed)
         lay.addWidget(self.show_previews)
@@ -243,6 +248,7 @@ class SettingsPanel(QWidget):
             self.unchanged_box.setChecked(s.export_unchanged)
             self.model_box.setCurrentIndex(max(0, self.model_box.findData(s.model)))
             self.show_previews.setChecked(s.show_previews)
+            self.gpu_box.setChecked(s.use_gpu)
         finally:
             self._loading = False
         self._update_visibility()
@@ -363,6 +369,12 @@ class SettingsPanel(QWidget):
             return
         self.settings.model = self.model_box.currentData()
         self.changed.emit("model")
+
+    def _gpu_changed(self, on: bool) -> None:
+        if self._loading:
+            return
+        self.settings.use_gpu = on
+        self.changed.emit("gpu")
 
     def _previews_changed(self, on: bool) -> None:
         if self._loading:
