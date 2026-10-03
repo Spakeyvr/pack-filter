@@ -45,7 +45,7 @@ Get the latest build for your OS from the **Releases** page:
 | OS | File | How to run |
 |---|---|---|
 | Windows | `PackFilter-*-windows-x64.zip` | Unzip, run `PackFilter.exe`. If SmartScreen warns you, click "More info" → "Run anyway". |
-| macOS (Apple Silicon / Intel) | `PackFilter-*-macos-arm64.dmg` / `-x64.dmg` | Drag to Applications. The first time, right-click the app → **Open** (the app isn't notarized). |
+| macOS (Apple Silicon / Intel) | `PackFilter-*-macos-arm64.dmg` / `-x64.dmg` | Drag to Applications. The first time, macOS blocks it because it isn't notarized: go to **System Settings → Privacy & Security**, then click **Open Anyway**. |
 | Linux | `PackFilter-*-linux-x64.tar.gz` | Extract and run `PackFilter/PackFilter`. Optionally run `install.sh` to add it to your app menu. |
 
 ## How to use
