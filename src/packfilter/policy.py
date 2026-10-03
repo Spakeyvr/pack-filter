@@ -38,6 +38,7 @@ PRESETS = (
            "explicit", 50),
 )
 PRESETS_BY_KEY = {p.key: p for p in PRESETS}
+MIN_STRENGTH = 30  # below this, blurred/pixelated covers can still be made out
 CENSOR_STYLES = ("blur", "pixelate", "solid", "image")
 CENSOR_STYLE_TITLES = {"blur": "Heavy blur", "pixelate": "Pixelate", "solid": "Solid color",
                        "image": "Replace with my image"}
@@ -63,7 +64,6 @@ class Settings:
     style_strength: int = 70           # 0..100
     solid_color: str = "#101014"
     replacement_image: str = ""
-    add_label: bool = True
     output_dir: str = ""               # where filtered .zip packs go; "" = Downloads
     export_unchanged: bool = False     # also export packs that had nothing to censor
     model: str = DEFAULT_MODEL
@@ -111,6 +111,7 @@ class Settings:
         if s.style not in CENSOR_STYLES:
             s.style = "blur"
         s.categories = [c for c in s.categories if c in CATEGORIES]
+        s.style_strength = max(MIN_STRENGTH, min(100, int(s.style_strength)))
         return s
 
     def save(self, path: Path) -> None:

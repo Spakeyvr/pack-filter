@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QComboBox,
 
 from ..censor import censor_image
 from ..model import MODELS
-from ..policy import CENSOR_STYLE_TITLES, CENSOR_STYLES, LEVEL_TITLES, PRESETS, Settings
+from ..policy import CENSOR_STYLE_TITLES, CENSOR_STYLES, MIN_STRENGTH, LEVEL_TITLES, PRESETS, Settings
 from ..scanner import CATEGORIES, CATEGORY_TITLES
 from .tasks import pil_to_qimage
 
@@ -167,7 +167,7 @@ class SettingsPanel(QWidget):
         sr.setContentsMargins(0, 0, 0, 0)
         sr.addWidget(QLabel("Strength"))
         self.strength = QSlider(Qt.Horizontal)
-        self.strength.setRange(0, 100)
+        self.strength.setRange(MIN_STRENGTH, 100)  # weaker than this leaves shapes recognisable
         self.strength.valueChanged.connect(self._style_changed)
         sr.addWidget(self.strength, 1)
         lay.addWidget(self.strength_row)
@@ -185,9 +185,6 @@ class SettingsPanel(QWidget):
         b.clicked.connect(self._pick_image)
         ir.addWidget(b)
         lay.addWidget(self.image_row)
-        self.label_box = QCheckBox('Add a "CENSORED" label')
-        self.label_box.toggled.connect(self._style_changed)
-        lay.addWidget(self.label_box)
         self.preview = QLabel()
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setMinimumHeight(110)
@@ -250,7 +247,6 @@ class SettingsPanel(QWidget):
                 cb.setChecked(c in s.categories)
             self.style_box.setCurrentIndex(max(0, self.style_box.findData(s.style)))
             self.strength.setValue(s.style_strength)
-            self.label_box.setChecked(s.add_label)
             self.image_path.setText(s.replacement_image)
             self.dest.setText(str(s.output_path()))
             self.reset_dest.setVisible(bool(s.output_dir))
@@ -331,7 +327,6 @@ class SettingsPanel(QWidget):
             return
         self.settings.style = self.style_box.currentData()
         self.settings.style_strength = self.strength.value()
-        self.settings.add_label = self.label_box.isChecked()
         if self.settings.style == "image" and not self.settings.replacement_image:
             self._pick_image()
         self._update_visibility()
