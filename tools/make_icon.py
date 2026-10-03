@@ -1,8 +1,11 @@
-"""Draw the app icon (PNG for the window, .ico for Windows, .icns for macOS)."""
+"""Draw the app icon (PNG for the window, .ico for Windows, .icns for macOS).
+
+A plain, flat mark: a cover whose picture is pixelated, on a dark tile.
+"""
 
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 S = 1024
@@ -10,45 +13,24 @@ S = 1024
 
 def draw() -> Image.Image:
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    # Background: rounded square with a vertical violet gradient.
-    grad = Image.new("RGBA", (S, S))
-    gd = ImageDraw.Draw(grad)
-    top, bottom = (140, 110, 255), (82, 46, 214)
-    for y in range(S):
-        t = y / S
-        gd.line([(0, y), (S, y)], fill=tuple(int(a + (b - a) * t) for a, b in zip(top, bottom)) + (255,))
-    mask = Image.new("L", (S, S), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((60, 60, S - 60, S - 60), radius=210, fill=255)
-    img.paste(grad, (0, 0), mask)
-
-    # A "cover" card whose picture is pixelated, i.e. censored.
     d = ImageDraw.Draw(img)
-    card = (215, 250, S - 215, S - 250)
-    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(shadow).rounded_rectangle((card[0], card[1] + 24, card[2], card[3] + 24), 60, fill=(20, 0, 60, 110))
-    img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(28)))
-    d.rounded_rectangle(card, radius=60, fill=(255, 255, 255, 255))
-    inner = (card[0] + 48, card[1] + 48, card[2] - 48, card[3] - 48)
+    d.rounded_rectangle((80, 80, S - 80, S - 80), radius=190, fill=(38, 38, 40, 255))
+
+    # The "cover": a light frame with a pixelated picture inside.
+    card = (230, 290, S - 230, S - 290)
+    d.rounded_rectangle(card, radius=36, fill=(236, 236, 236, 255))
+    inner = (card[0] + 34, card[1] + 34, card[2] - 34, card[3] - 34)
     cols, rows = 4, 3
     w = (inner[2] - inner[0]) / cols
     h = (inner[3] - inner[1]) / rows
-    palette = [(255, 196, 120), (255, 150, 170), (190, 160, 255), (130, 200, 255), (255, 220, 160),
-               (230, 140, 200), (160, 140, 250), (255, 180, 140), (200, 170, 255), (150, 210, 240),
-               (255, 160, 190), (240, 200, 255)]
+    greys = [(118, 118, 122), (150, 150, 154), (98, 98, 102), (172, 172, 176),
+             (140, 140, 144), (88, 88, 92), (160, 160, 164), (124, 124, 128),
+             (178, 178, 182), (110, 110, 114), (132, 132, 136), (96, 96, 100)]
     for r in range(rows):
         for c in range(cols):
-            box = (inner[0] + c * w, inner[1] + r * h, inner[0] + (c + 1) * w, inner[1] + (r + 1) * h)
-            d.rectangle(box, fill=palette[r * cols + c])
-    # Round the mosaic's corners by re-masking it.
-    m = Image.new("L", (S, S), 0)
-    ImageDraw.Draw(m).rounded_rectangle(inner, radius=28, fill=255)
-    white = Image.new("RGBA", (S, S), (255, 255, 255, 255))
-    ring = Image.new("L", (S, S), 0)
-    ImageDraw.Draw(ring).rectangle(inner, fill=255)
-    ring = Image.composite(Image.new("L", (S, S), 0), ring, m)
-    img.paste(white, (0, 0), ring)
-    # "No" bar across the card.
-    d.line([(card[0] + 20, card[3] - 20), (card[2] - 20, card[1] + 20)], fill=(82, 46, 214, 255), width=64)
+            d.rectangle((round(inner[0] + c * w), round(inner[1] + r * h),
+                         round(inner[0] + (c + 1) * w) - 1, round(inner[1] + (r + 1) * h) - 1),
+                        fill=greys[r * cols + c])
     return img
 
 

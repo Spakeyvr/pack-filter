@@ -6,10 +6,10 @@ from typing import Optional
 
 from PIL import Image, ImageDraw
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtGui import QColor, QFontMetrics, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QComboBox, QFileDialog, QFrame,
                                QHBoxLayout, QLabel, QLineEdit, QPushButton, QRadioButton, QScrollArea,
-                               QSlider, QVBoxLayout, QWidget)
+                               QSlider, QStyle, QVBoxLayout, QWidget)
 
 from ..censor import censor_image
 from ..model import MODELS
@@ -19,8 +19,8 @@ from .tasks import pil_to_qimage
 
 
 def section(title: str) -> QLabel:
-    lbl = QLabel(title.upper())
-    lbl.setObjectName("SectionTitle")
+    lbl = QLabel(title)
+    lbl.setObjectName("Section")
     return lbl
 
 
@@ -31,34 +31,26 @@ def hint(text: str) -> QLabel:
     return lbl
 
 
-class PresetCard(QFrame):
+class PresetOption(QWidget):
+    """A radio button with a short explanation underneath."""
+
     clicked = Signal(str)
 
     def __init__(self, key: str, title: str, description: str, parent=None):
         super().__init__(parent)
         self.key = key
-        self.setObjectName("PresetCard")
-        self.setCursor(Qt.PointingHandCursor)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 9, 12, 9)
-        lay.setSpacing(2)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
         self.radio = QRadioButton(title)
-        self.radio.setStyleSheet("font-weight: 600;")
         self.radio.toggled.connect(lambda on: on and self.clicked.emit(self.key))
         lay.addWidget(self.radio)
         if description:
             d = hint(description)
-            d.setContentsMargins(26, 0, 0, 0)
+            indent = self.radio.style().pixelMetric(QStyle.PM_ExclusiveIndicatorWidth) + \
+                self.radio.style().pixelMetric(QStyle.PM_RadioButtonLabelSpacing)
+            d.setContentsMargins(indent, 0, 0, 0)
             lay.addWidget(d)
-
-    def mousePressEvent(self, e):
-        self.radio.setChecked(True)
-        super().mousePressEvent(e)
-
-    def set_selected(self, on: bool) -> None:
-        self.setProperty("selected", on)
-        self.style().unpolish(self)
-        self.style().polish(self)
 
 
 def sample_art(size=(418, 164)) -> Image.Image:
@@ -83,8 +75,8 @@ class SettingsPanel(QWidget):
         self.settings = settings
         self._loading = True
         self._preview_source: Optional[Image.Image] = None
-        self.setObjectName("SettingsPanel")
-        self.setMinimumWidth(320)
+        self.setObjectName("Panel")
+        self.setMinimumWidth(QFontMetrics(self.font()).averageCharWidth() * 36)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
@@ -95,24 +87,20 @@ class SettingsPanel(QWidget):
         body = QWidget()
         scroll.setWidget(body)
         lay = QVBoxLayout(body)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(10)
-
-        title = QLabel("Censor settings")
-        title.setObjectName("PanelTitle")
-        lay.addWidget(title)
+        lay.setContentsMargins(12, 10, 12, 12)
+        lay.setSpacing(8)
 
         # --- What to censor --------------------------------------------------
         lay.addWidget(section("What to censor"))
-        self.cards: dict[str, PresetCard] = {}
+        self.cards: dict[str, PresetOption] = {}
         group = QButtonGroup(self)
         for p in PRESETS:
-            card = PresetCard(p.key, p.title + ("  (recommended)" if p.key == "balanced" else ""), p.description)
+            card = PresetOption(p.key, p.title + (" (default)" if p.key == "balanced" else ""), p.description)
             group.addButton(card.radio)
             card.clicked.connect(self._preset_clicked)
             self.cards[p.key] = card
             lay.addWidget(card)
-        custom = PresetCard("custom", "Custom", "Fine-tune with the controls below.")
+        custom = PresetOption("custom", "Custom", "Fine-tune with the controls below.")
         group.addButton(custom.radio)
         custom.clicked.connect(self._preset_clicked)
         self.cards["custom"] = custom
@@ -145,7 +133,7 @@ class SettingsPanel(QWidget):
         lay.addLayout(lab)
 
         # --- Which images --------------------------------------------------------
-        lay.addSpacing(6)
+        lay.addSpacing(10)
         lay.addWidget(section("Which images"))
         self.cat_boxes: dict[str, QCheckBox] = {}
         for c in CATEGORIES:
@@ -155,7 +143,7 @@ class SettingsPanel(QWidget):
             lay.addWidget(cb)
 
         # --- How to censor -------------------------------------------------------
-        lay.addSpacing(6)
+        lay.addSpacing(10)
         lay.addWidget(section("How to censor"))
         self.style_box = QComboBox()
         for st in CENSOR_STYLES:
@@ -187,14 +175,14 @@ class SettingsPanel(QWidget):
         lay.addWidget(self.image_row)
         self.preview = QLabel()
         self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setMinimumHeight(110)
+        self.preview.setMinimumHeight(QFontMetrics(self.font()).height() * 6)
         lay.addWidget(self.preview)
         self.preview_caption = hint("Preview")
         self.preview_caption.setAlignment(Qt.AlignCenter)
         lay.addWidget(self.preview_caption)
 
         # --- Where to save -------------------------------------------------------
-        lay.addSpacing(6)
+        lay.addSpacing(10)
         lay.addWidget(section("Save filtered packs to"))
         self.dest_row = QWidget()
         dr = QHBoxLayout(self.dest_row)
@@ -207,7 +195,7 @@ class SettingsPanel(QWidget):
         dr.addWidget(b)
         lay.addWidget(self.dest_row)
         self.reset_dest = QPushButton("Use my Downloads folder")
-        self.reset_dest.setObjectName("Flat")
+        self.reset_dest.setObjectName("Link")
         self.reset_dest.clicked.connect(self._reset_dest)
         lay.addWidget(self.reset_dest, 0, Qt.AlignLeft)
         lay.addWidget(hint("Each filtered pack is saved as its own .zip. Your original packs are never changed."))
@@ -216,7 +204,7 @@ class SettingsPanel(QWidget):
         lay.addWidget(self.unchanged_box)
 
         # --- Detection model -----------------------------------------------------
-        lay.addSpacing(6)
+        lay.addSpacing(10)
         lay.addWidget(section("Detection"))
         self.model_box = QComboBox()
         for info in MODELS.values():
@@ -232,6 +220,10 @@ class SettingsPanel(QWidget):
         lay.addStretch(1)
 
         self.load_from_settings()
+        # The scroll area never scrolls sideways, so the panel must be at least as wide as its content.
+        body.adjustSize()
+        bar = scroll.verticalScrollBar().sizeHint().width()
+        self.setMinimumWidth(max(self.minimumWidth(), body.minimumSizeHint().width() + bar + 4))
 
     # ------------------------------------------------------------------ sync --
     def load_from_settings(self) -> None:
@@ -239,8 +231,6 @@ class SettingsPanel(QWidget):
         self._loading = True
         try:
             self.cards.get(s.preset, self.cards["custom"]).radio.setChecked(True)
-            for key, card in self.cards.items():
-                card.set_selected(key == s.preset)
             self.level.setCurrentIndex(max(0, self.level.findData(s.min_level)))
             self.strictness.setValue(s.strictness)
             for c, cb in self.cat_boxes.items():
@@ -311,8 +301,6 @@ class SettingsPanel(QWidget):
         self._loading = True
         self.cards[self.settings.preset].radio.setChecked(True)
         self._loading = False
-        for key, card in self.cards.items():
-            card.set_selected(key == self.settings.preset)
         self._update_strict_label()
         self.changed.emit("filter")
 

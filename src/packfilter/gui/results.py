@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QListView, QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
 from ..engine import Item
@@ -131,17 +131,29 @@ class ThumbCache:
 
 
 class CardDelegate(QStyledItemDelegate):
-    MIN_W, TEXT_H, GAP = 210, 50, 10
+    """A thumbnail with three lines of text under it. All sizes derive from the font."""
+
+    GAP = 8
 
     def __init__(self, cache: ThumbCache, settings_fn: Callable[[], Settings], parent=None):
         super().__init__(parent)
         self.cache = cache
         self.settings_fn = settings_fn
-        self.card_w = self.MIN_W
-        self.thumb_h = round(self.MIN_W * 0.5625)
+        self.card_w = self.min_width(QFont())
+        self.thumb_h = round(self.card_w * 0.5625)
+        self.text_h = 0
+
+    @staticmethod
+    def min_width(font: QFont) -> int:
+        return QFontMetrics(font).averageCharWidth() * 26
+
+    def text_height(self, font: QFont) -> int:
+        bold = QFontMetrics(scaled_font(font, 1.0, bold=True))
+        small = QFontMetrics(scaled_font(font, 0.92))
+        return 8 + bold.height() + 2 * small.height() + 4 + 8
 
     def cell_size(self) -> QSize:
-        return QSize(self.card_w + self.GAP, self.thumb_h + self.TEXT_H + self.GAP)
+        return QSize(self.card_w + self.GAP, self.thumb_h + self.text_h + self.GAP)
 
     def sizeHint(self, option, index):
         return self.cell_size()
@@ -153,88 +165,77 @@ class CardDelegate(QStyledItemDelegate):
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
-        r = option.rect.adjusted(self.GAP // 2, self.GAP // 2, -self.GAP // 2, -self.GAP // 2)
+        r = QRectF(option.rect.adjusted(self.GAP // 2, self.GAP // 2, -self.GAP // 2, -self.GAP // 2))
         selected = bool(option.state & QStyle.State_Selected)
         hovered = bool(option.state & QStyle.State_MouseOver)
 
         card = QPainterPath()
-        card.addRoundedRect(QRectF(r), 10, 10)
-        p.fillPath(card, QColor(t.surface))
-        border = QColor(t.accent) if selected else QColor(t.border if not hovered else t.text_dim)
-        p.setPen(border)
-        if selected:
-            pen = p.pen()
-            pen.setWidthF(2.5)
-            p.setPen(pen)
-        p.drawPath(card)
+        card.addRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
+        p.fillPath(card, QColor(t.panel))
 
-        # Thumbnail area
-        thumb_rect = QRect(r.left() + 1, r.top() + 1, r.width() - 2, self.thumb_h)
+        # Thumbnail
+        thumb = QRectF(r.left(), r.top(), r.width(), self.thumb_h)
         clip = QPainterPath()
-        clip.addRoundedRect(QRectF(thumb_rect), 9, 9)
+        clip.addRoundedRect(thumb.adjusted(0.5, 0.5, -0.5, 0), 4, 4)
         p.save()
         p.setClipPath(clip)
-        p.fillRect(thumb_rect, QColor(t.surface_alt))
+        p.fillRect(thumb, QColor(t.bg))
         pix = self.cache.get(item) if (item.scores is not None or item.censored) and not item.error else None
         if pix is not None:
             hide = should_hide_preview(item, s)
             pm = pix[1] if hide else pix[0]
-            scaled = pm.scaled(thumb_rect.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            x = thumb_rect.left() + (thumb_rect.width() - scaled.width()) // 2
-            y = thumb_rect.top() + (thumb_rect.height() - scaled.height()) // 2
-            p.drawPixmap(x, y, scaled)
+            target = thumb.toRect()
+            scaled = pm.scaled(target.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            p.drawPixmap(target.left() + (target.width() - scaled.width()) // 2,
+                         target.top() + (target.height() - scaled.height()) // 2, scaled)
             if hide and not item.censored:
-                p.setPen(QColor(255, 255, 255, 220))
-                p.setFont(scaled_font(option.font, 0.9))
-                p.drawText(thumb_rect, Qt.AlignCenter, "Preview hidden")
+                p.setPen(QColor(255, 255, 255, 210))
+                p.setFont(scaled_font(option.font, 0.92))
+                p.drawText(thumb, Qt.AlignCenter, "Preview hidden")
         else:
             p.setPen(QColor(t.text_dim))
-            p.drawText(thumb_rect, Qt.AlignCenter, "Unreadable image" if item.error else "Checking...")
+            p.drawText(thumb, Qt.AlignCenter, "Unreadable" if item.error else "Checking...")
         p.restore()
 
-        # Status chip
-        label, color_key = item_state(item, s)
-        chip_color = QColor(getattr(t, color_key))
-        f = scaled_font(option.font, 0.82, bold=True)
-        p.setFont(f)
-        fm = QFontMetrics(f)
-        chip = QRect(thumb_rect.left() + 8, thumb_rect.top() + 8, fm.horizontalAdvance(label) + 16, fm.height() + 6)
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(chip), chip.height() / 2, chip.height() / 2)
-        p.fillPath(path, chip_color)
-        p.setPen(QColor("#ffffff"))
-        p.drawText(chip, Qt.AlignCenter, label)
+        # Text: title / status / details
+        pad = 8
+        x = r.left() + pad
+        width = int(r.width() - 2 * pad)
+        y = thumb.bottom() + 8
+        bold = scaled_font(option.font, 1.0, bold=True)
+        small = scaled_font(option.font, 0.92)
+        fb, fs = QFontMetrics(bold), QFontMetrics(small)
+        p.setFont(bold)
+        p.setPen(QColor(t.text))
+        p.drawText(int(x), int(y + fb.ascent()), fb.elidedText(item.song, Qt.ElideRight, width))
+        y += fb.height() + 2
 
-        # Rating chip
+        label, color_key = item_state(item, s)
+        color = QColor(getattr(t, color_key) if color_key != "ok" else t.text_dim)
+        dot = fs.height() * 0.42
+        p.setPen(Qt.NoPen)
+        p.setBrush(color)
+        p.drawEllipse(QRectF(x, y + (fs.height() - dot) / 2, dot, dot))
+        p.setFont(small)
+        p.setPen(color)
+        status = label
         if item.scores:
             top = max(item.scores, key=item.scores.get)
-            text = f"{RATING_NAMES[top]} {item.scores[top] * 100:.0f}%"
-            rchip = QRect(0, 0, fm.horizontalAdvance(text) + 14, fm.height() + 6)
-            rchip.moveBottomRight(thumb_rect.bottomRight() - QRect(0, 0, 8, 8).bottomRight())
-            path = QPainterPath()
-            path.addRoundedRect(QRectF(rchip), 6, 6)
-            p.fillPath(path, QColor(0, 0, 0, 150))
-            p.setPen(QColor("#ffffff"))
-            p.drawText(rchip, Qt.AlignCenter, text)
+            status += f"  ·  {RATING_NAMES[top]} {item.scores[top] * 100:.0f}%"
+        p.drawText(int(x + dot + 6), int(y + fs.ascent()), fs.elidedText(status, Qt.ElideRight, int(width - dot - 6)))
+        y += fs.height() + 2
 
-        # Text
-        text_rect = QRect(r.left() + 10, thumb_rect.bottom() + 6, r.width() - 20, self.TEXT_H - 10)
-        f = scaled_font(option.font, 1.0, bold=True)
-        p.setFont(f)
-        p.setPen(QColor(t.text))
-        fm = QFontMetrics(f)
-        p.drawText(text_rect.left(), text_rect.top() + fm.ascent(),
-                   fm.elidedText(item.song, Qt.ElideRight, text_rect.width()))
-        f2 = scaled_font(option.font, 0.88)
-        p.setFont(f2)
+        cats = sorted(item.categories)
+        cat = (CATEGORY_TITLES.get(cats[0], "Image").rstrip("s") if len(cats) == 1
+               else " + ".join(CATEGORY_TITLES[c].split(" ")[0].rstrip("s") for c in cats))
         p.setPen(QColor(t.text_dim))
-        fm2 = QFontMetrics(f2)
-        cat = CATEGORY_TITLES.get(next(iter(sorted(item.categories)), "other"), "Image").rstrip("s")
-        if len(item.categories) > 1:
-            cat = " + ".join(CATEGORY_TITLES[c].split(" ")[0].rstrip("s") for c in sorted(item.categories))
-        sub = f"{cat}  ·  {item.path.name}"
-        p.drawText(text_rect.left(), text_rect.top() + fm.height() + fm2.ascent() + 2,
-                   fm2.elidedText(sub, Qt.ElideMiddle, text_rect.width()))
+        p.drawText(int(x), int(y + fs.ascent()), fs.elidedText(f"{cat}  ·  {item.path.name}", Qt.ElideMiddle, width))
+
+        p.setBrush(Qt.NoBrush)
+        pen = QPen(QColor(t.accent if selected else (t.text_dim if hovered else t.border)))
+        pen.setWidthF(2.0 if selected else 1.0)
+        p.setPen(pen)
+        p.drawPath(card)
         p.restore()
 
 
@@ -260,14 +261,22 @@ class ResultsView(QListView):
         self.relayout()
 
     def relayout(self) -> None:
-        """Stretch cards so each row fills the full width."""
+        """Stretch cards so each row fills the full width; sizes follow the font."""
         d = self.itemDelegate()
         if not isinstance(d, CardDelegate):
             return
-        avail = self.width() - self.style().pixelMetric(QStyle.PM_ScrollBarExtent) - 4
-        cols = max(1, avail // (d.MIN_W + d.GAP))
-        cell = avail // cols
-        d.card_w = cell - d.GAP
+        d.text_h = d.text_height(self.font())
+        min_w = d.min_width(self.font())
+        avail = self.viewport().width() - 2
+        if self.verticalScrollBar().isHidden():
+            avail -= self.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+        cols = max(1, avail // (min_w + d.GAP))
+        d.card_w = max(min_w, avail // cols - d.GAP)
         d.thumb_h = round(d.card_w * 0.5625)
         if self.gridSize() != d.cell_size():
             self.setGridSize(d.cell_size())
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() == QEvent.FontChange:
+            self.relayout()

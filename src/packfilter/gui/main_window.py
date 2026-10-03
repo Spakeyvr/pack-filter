@@ -13,11 +13,11 @@ from typing import Callable, Optional
 
 from PIL import Image
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
+from PySide6.QtGui import QAction, QDesktopServices, QFontMetrics, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton,
-                               QSplitter, QStackedWidget, QStatusBar, QTabBar, QToolButton, QVBoxLayout,
-                               QWidget)
+                               QSizePolicy, QSplitter, QStackedWidget, QStatusBar, QTabBar, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from .. import APP_NAME, __version__
 from ..engine import ApplyResult, Engine, Item, extract_zip, items_from_packs
@@ -26,12 +26,14 @@ from ..policy import Settings
 from ..scanner import CATEGORIES
 from . import theme
 from .detail import DetailPanel
-from .results import CardDelegate, ItemRole, ResultsModel, ResultsView, ThumbCache
+from .detail import fixed
+from .results import CardDelegate, ItemRole, ResultsModel, ResultsView, ThumbCache, scaled_font
 from .settings_panel import SettingsPanel
 from .tasks import Task, ThumbnailLoader
 
-FILTERS = (("all", "All"), ("censor", "Will censor"), ("ok", "Not censored"), ("done", "Already censored"),
+FILTERS = (("all", "All"), ("censor", "Will censor"), ("ok", "Kept"), ("done", "Censored earlier"),
            ("problem", "Unreadable"))
+OPTIONAL_FILTERS = {"done", "problem"}  # tabs hidden while empty
 ALL_PACKS = "__all__"
 
 
@@ -86,14 +88,17 @@ class DropZone(QFrame):
         lay = QVBoxLayout(self)
         lay.setAlignment(Qt.AlignCenter)
         lay.setSpacing(10)
+        lay.setContentsMargins(24, 24, 24, 24)
         big = QLabel("Drop song packs here")
-        big.setObjectName("Big")
+        big.setFont(scaled_font(self.font(), 1.3, bold=True))
         big.setAlignment(Qt.AlignCenter)
         lay.addWidget(big)
-        sub = QLabel("Pack folders, your whole Songs folder, or downloaded .zip packs.\n"
-                     "Works with Etterna and StepMania packs, and folders from other rhythm games.")
+        sub = QLabel("Pack folders, your whole Songs folder, or downloaded .zip packs. Works with Etterna "
+                     "and StepMania packs, and folders from other rhythm games.")
         sub.setObjectName("Hint")
         sub.setAlignment(Qt.AlignCenter)
+        sub.setWordWrap(True)
+        sub.setMinimumWidth(QFontMetrics(self.font()).averageCharWidth() * 52)
         lay.addWidget(sub)
         lay.addSpacing(8)
         row = QHBoxLayout()
@@ -111,7 +116,9 @@ class DropZone(QFrame):
         lay.addLayout(self.etterna_btns)
         for folder in etterna_song_folders()[:3]:
             b = QPushButton(f"Use Etterna Songs folder: {folder}")
-            b.setObjectName("Flat")
+            b.setToolTip(str(folder))
+            b.setMaximumWidth(QFontMetrics(self.font()).averageCharWidth() * 60)
+            b.setObjectName("Link")
             b.clicked.connect(lambda _=False, f=folder: on_etterna(f))
             self.etterna_btns.addWidget(b)
         lay.addSpacing(10)
@@ -119,6 +126,8 @@ class DropZone(QFrame):
                       "(to Downloads unless you pick another folder).")
         note.setObjectName("Hint")
         note.setAlignment(Qt.AlignCenter)
+        note.setWordWrap(True)
+        note.setMinimumWidth(QFontMetrics(self.font()).averageCharWidth() * 52)
         lay.addWidget(note)
 
     def set_hover(self, on: bool) -> None:
@@ -131,8 +140,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(1360, 860)
-        self.setMinimumSize(QSize(980, 620))
+        # Fit the screen we open on (e.g. 1920x1080 at 150% is only 1280x720 logical pixels).
+        screen = QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry().size() if screen else QSize(1280, 800)
+        self.resize(min(1320, int(avail.width() * 0.92)), min(860, int(avail.height() * 0.9)))
         self.setAcceptDrops(True)
 
         self.settings_path = data_dir() / "settings.json"
@@ -159,20 +170,15 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(12, 10, 12, 8)
-        root.setSpacing(10)
+        root.setContentsMargins(10, 8, 10, 6)
+        root.setSpacing(8)
 
-        # Header
+        # Toolbar
         header = QHBoxLayout()
-        title = QLabel(APP_NAME)
-        title.setObjectName("Big")
-        header.addWidget(title)
-        tag = QLabel("Hide lewd song pack covers")
-        tag.setObjectName("Hint")
-        header.addWidget(tag)
-        header.addSpacing(16)
+        header.setSpacing(6)
         self.add_btn = QToolButton()
-        self.add_btn.setText("+  Add packs")
+        self.add_btn.setText("Add packs \u25BE")
+        self.add_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.add_btn.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(self.add_btn)
         menu.addAction("Add a folder (a pack, or a whole Songs folder)...", self.choose_folder)
@@ -186,21 +192,30 @@ class MainWindow(QMainWindow):
         self.clear_action = menu.addAction("Remove all packs from the list", self.clear_packs)
         self.add_btn.setMenu(menu)
         header.addWidget(self.add_btn)
-        self.rescan_btn = QPushButton("Rescan")
+        self.rescan_btn = fixed(QPushButton("Rescan"))
         self.rescan_btn.setToolTip("Check every image again (picks up changes made outside the app)")
         self.rescan_btn.clicked.connect(self.rescan)
         header.addWidget(self.rescan_btn)
+        header.addSpacing(6)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search")
+        self.search.setClearButtonEnabled(True)
+        self.search.setFocusPolicy(Qt.ClickFocus)
+        self.search.setMinimumWidth(QFontMetrics(self.font()).averageCharWidth() * 14)
+        self.search.setMaximumWidth(QFontMetrics(self.font()).averageCharWidth() * 36)
+        self.search.textChanged.connect(lambda *_: self._refresh_timer.start())
+        header.addWidget(self.search, 1)
         header.addStretch(1)
-        self.restore_all_btn = QPushButton("Restore originals")
+        self.restore_all_btn = fixed(QPushButton("Restore originals"))
         self.restore_all_btn.setToolTip("Undo censoring done directly inside these packs (e.g. by the command line)")
         self.restore_all_btn.clicked.connect(self.restore_all)
         header.addWidget(self.restore_all_btn)
-        self.dest_btn = QPushButton()
-        self.dest_btn.setObjectName("Flat")
+        self.dest_btn = fixed(QPushButton())
+        self.dest_btn.setObjectName("Link")
         self.dest_btn.setCursor(Qt.PointingHandCursor)
         self.dest_btn.setToolTip("Click to choose where filtered packs are saved")
         header.addWidget(self.dest_btn)
-        self.apply_btn = QPushButton("Download")
+        self.apply_btn = fixed(QPushButton("Download"))
         self.apply_btn.setObjectName("Primary")
         self.apply_btn.clicked.connect(self.download)
         header.addWidget(self.apply_btn)
@@ -211,14 +226,15 @@ class MainWindow(QMainWindow):
         self.splitter.setChildrenCollapsible(False)
         root.addWidget(self.splitter, 1)
 
+        cw = QFontMetrics(self.font()).averageCharWidth()
         side = QFrame()
-        side.setObjectName("Sidebar")
-        side.setMinimumWidth(200)
+        side.setObjectName("Panel")
+        side.setMinimumWidth(cw * 20)
         sl = QVBoxLayout(side)
-        sl.setContentsMargins(8, 12, 8, 8)
-        lbl = QLabel("PACKS")
-        lbl.setObjectName("SectionTitle")
-        lbl.setContentsMargins(8, 0, 0, 4)
+        sl.setContentsMargins(6, 8, 6, 6)
+        lbl = QLabel("Packs")
+        lbl.setObjectName("Section")
+        lbl.setContentsMargins(6, 0, 0, 2)
         sl.addWidget(lbl)
         self.pack_list = QListWidget()
         self.pack_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -228,11 +244,12 @@ class MainWindow(QMainWindow):
         self.pack_list.customContextMenuRequested.connect(self._pack_menu)
         sl.addWidget(self.pack_list, 1)
         self.remove_pack_btn = QPushButton("Remove from list")
+        self.remove_pack_btn.setMinimumWidth(self.remove_pack_btn.sizeHint().width())
         self.remove_pack_btn.clicked.connect(self.remove_selected_pack)
         sl.addWidget(self.remove_pack_btn)
         self.splitter.addWidget(side)
 
-        center = QWidget()
+        center = QWidget()  # minimum width comes from its contents (detail panel, tabs)
         cl = QVBoxLayout(center)
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(8)
@@ -244,22 +261,14 @@ class MainWindow(QMainWindow):
         rl = QVBoxLayout(results_page)
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(6)
-        bar = QHBoxLayout()
         self.tabs = QTabBar()
         self.tabs.setDrawBase(False)
         self.tabs.setExpanding(False)
+        self.tabs.setElideMode(Qt.ElideNone)
         for _, name in FILTERS:
             self.tabs.addTab(name)
         self.tabs.currentChanged.connect(lambda *_: self._refresh_view())
-        bar.addWidget(self.tabs)
-        bar.addStretch(1)
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search songs, packs, files...")
-        self.search.setClearButtonEnabled(True)
-        self.search.setFixedWidth(240)
-        self.search.textChanged.connect(lambda *_: self._refresh_timer.start())
-        bar.addWidget(self.search)
-        rl.addLayout(bar)
+        rl.addWidget(self.tabs)
 
         self.model = ResultsModel(self)
         self.view = ResultsView()
@@ -278,6 +287,7 @@ class MainWindow(QMainWindow):
         rl.addWidget(vstack, 1)
 
         self.detail = DetailPanel(self.thumbs, lambda: self.settings)
+        self.detail.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)  # never squash its text
         self.detail.override.connect(self.set_override)
         self.detail.restore.connect(self.restore_selected)
         rl.addWidget(self.detail)
@@ -292,7 +302,7 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([230, 760, 350])
+        self.splitter.setSizes([cw * 26, cw * 90, cw * 40])
 
         # Status bar
         sb = QStatusBar()
@@ -380,7 +390,8 @@ class MainWindow(QMainWindow):
         scope = [it for it in self.items if pack is None or str(it.pack_root) == pack]
         for i, (key, name) in enumerate(FILTERS):
             n = sum(self._matches(it, key) for it in scope)
-            self.tabs.setTabText(i, f"{name}  {n}")
+            self.tabs.setTabText(i, f"{name} ({n})")
+            self.tabs.setTabVisible(i, n > 0 or key not in OPTIONAL_FILTERS or self.tabs.currentIndex() == i)
         n_censor = sum(it.will_censor(s) for it in self.items)
         n_done = sum(it.censored for it in self.items)
         busy = self._busy()

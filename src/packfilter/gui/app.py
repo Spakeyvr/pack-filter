@@ -63,6 +63,7 @@ def main() -> int:
     icon = bundled_assets_dir() / "icon.png"
     if icon.exists():
         app.setWindowIcon(QIcon(str(icon)))
+    theme.capture_system_accent()
     apply_theme(app)
     hints = app.styleHints()
     if hasattr(hints, "colorSchemeChanged"):
