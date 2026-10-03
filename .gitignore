@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+# Downloaded at build time, never committed
+src/packfilter/assets/models/
+# Test packs are generated locally and may contain NSFW images
+test-packs/
