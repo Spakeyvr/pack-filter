@@ -119,15 +119,15 @@ def encode_like(img: Image.Image, fmt: Optional[str], path: Path) -> bytes:
     return buf.getvalue()
 
 
-def censor_file(path: Path, settings: Settings, store: Store) -> bool:
+def censor_file(path: Path, settings: Settings, store: Store) -> Optional[str]:
     """Censor one image file in place, backing up the original first.
 
-    Returns False if the file was already censored by us.
+    Returns the new file's SHA-256, or None if the file was already censored by us.
     """
     data = path.read_bytes()
     original_sha = sha256_bytes(data)
     if store.lookup_censored(original_sha):
-        return False
+        return None
     store.save_backup(original_sha, path.suffix, data)
     with Image.open(io.BytesIO(data)) as img:
         fmt = img.format
@@ -136,8 +136,9 @@ def censor_file(path: Path, settings: Settings, store: Store) -> bool:
     tmp = path.with_name(path.name + ".pftmp")
     tmp.write_bytes(encoded)
     os.replace(tmp, path)
-    store.record_censored(sha256_bytes(encoded), original_sha, path.suffix, path)
-    return True
+    new_sha = sha256_bytes(encoded)
+    store.record_censored(new_sha, original_sha, path.suffix, path)
+    return new_sha
 
 
 def is_censored(path: Path, store: Store) -> bool:

@@ -217,10 +217,11 @@ class Engine:
             if copy_map:
                 path = copy_map[it.pack_root] / it.path.relative_to(it.pack_root)
             try:
-                if censor_file(path, settings, self.store):
+                new_sha = censor_file(path, settings, self.store)
+                if new_sha:
                     result.censored += 1
                     if not copy_map:
-                        it.censored = True
+                        it.censored, it.sha = True, new_sha
                 else:
                     result.skipped += 1
             except Exception as exc:
