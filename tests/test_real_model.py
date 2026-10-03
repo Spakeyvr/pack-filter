@@ -3,7 +3,9 @@
 Needs network on first run (model + the imgutils sample images). Skipped offline.
 """
 
-import os
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -34,10 +36,20 @@ def model_ready():
 
 
 def test_matches_reference_imgutils(model_ready, test_packs):
-    imgutils = pytest.importorskip("imgutils.validate")
+    # Run imgutils in a clean interpreter: PySide6 (imported by the GUI tests) installs an
+    # import hook that breaks the ``six`` package imgutils depends on.
+    files = sorted(str(f) for f in CACHE.glob("*/*.jpg"))
+    code = ("import json, sys\n"
+            "from imgutils.validate import anime_dbrating_score\n"
+            "print(json.dumps([anime_dbrating_score(f) for f in sys.argv[1:]]))")
+    proc = subprocess.run([sys.executable, "-c", code, *files], capture_output=True, text=True)
+    if proc.returncode != 0 and "ModuleNotFoundError" in proc.stderr:
+        pytest.skip("imgutils not installed (pip install -e .[reference])")
+    assert proc.returncode == 0, proc.stderr
+    refs = json.loads(proc.stdout.strip().splitlines()[-1])
     model = RatingModel()
-    for f in sorted(CACHE.glob("*/*.jpg")):
-        ours, ref = model.predict(f), imgutils.anime_dbrating_score(str(f))
+    for f, ref in zip(files, refs):
+        ours = model.predict(f)
         assert all(abs(ours[k] - ref[k]) < 1e-4 for k in ref), f
 
 

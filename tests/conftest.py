@@ -21,8 +21,10 @@ def isolated_data_dir(tmp_path, monkeypatch):
 
 
 def make_image(path: Path, color=(200, 50, 50), size=(64, 32), mode="RGB", fmt=None):
+    """A tinted noise image: dominated by ``color`` but with detail, like real art."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    img = Image.new(mode, size, color)
+    noise = Image.effect_noise(size, 60).convert("RGB")
+    img = Image.blend(Image.new("RGB", size, color), noise, 0.25).convert(mode)
     img.save(path, fmt)
     return path
 
