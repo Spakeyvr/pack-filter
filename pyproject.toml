@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "packfilter"
-version = "1.0.0"
+dynamic = ["version"]
 description = "Scan rhythm-game song packs (Etterna, StepMania, osu!, ...) and censor sexualized cover art using the anime_dbrating model."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,6 +30,9 @@ packfilter-cli = "packfilter.cli:main"
 
 [project.gui-scripts]
 packfilter = "packfilter.gui.app:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "packfilter.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

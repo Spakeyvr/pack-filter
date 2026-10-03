@@ -6,6 +6,8 @@ ROOT = Path(SPECPATH).parent
 SRC = ROOT / "src"
 ASSETS = SRC / "packfilter" / "assets"
 APP = "Pack Filter"
+sys.path.insert(0, str(SRC))
+from packfilter import __version__ as VERSION  # noqa: E402
 
 datas = [(str(ASSETS), "packfilter/assets")]
 
@@ -48,8 +50,8 @@ if sys.platform == "darwin":
         icon=icon,
         bundle_identifier="io.github.packfilter",
         info_plist={
-            "CFBundleShortVersionString": "1.0.0",
-            "CFBundleVersion": "1.0.0",
+            "CFBundleShortVersionString": VERSION,
+            "CFBundleVersion": VERSION,
             "NSHighResolutionCapable": True,
             "LSApplicationCategoryType": "public.app-category.utilities",
             "NSRequiresAquaSystemAppearance": False,

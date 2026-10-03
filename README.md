@@ -97,7 +97,15 @@ python packaging/build.py        # creates dist/PackFilter-<version>-<os>-<arch>
 
 PyInstaller can't cross-compile, so build each OS on that OS. The GitHub Actions workflow in
 `.github/workflows/build.yml` builds and smoke-tests Windows, macOS (arm64 + Intel) and Linux on
-every push. Push a `v*` tag to publish a release.
+every push.
+
+To release, follow these steps:
+
+1. Set the version in `src/packfilter/__init__.py`. That's the only place it lives.
+2. Add `docs/release-notes/vX.Y.Z.md`.
+3. Push a `vX.Y.Z` tag.
+
+The workflow refuses to build if the tag doesn't match the version.
 
 ### Tests
 
